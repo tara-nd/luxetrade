@@ -10,15 +10,22 @@ let tray = null;
 let pollTimer = null;
 let isQuitting = false;
 
-let watchlist = loadWatchlist();
+const DEFAULT_VOICE = 'chime';
+
+let watchlist = loadWatchlist(); // [{ symbol, voice }]
 let lastQuotes = {}; // symbol -> last known quote, used to detect direction changes
 
 function loadWatchlist() {
+    let raw;
     try {
-        return JSON.parse(fs.readFileSync(WATCHLIST_FILE, 'utf-8'));
+        raw = JSON.parse(fs.readFileSync(WATCHLIST_FILE, 'utf-8'));
     } catch {
-        return ['AAPL', 'NVDA', 'BTC-USD'];
+        raw = ['AAPL', 'NVDA', 'BTC-USD'];
     }
+    // Migrate the old format (plain array of symbol strings) to {symbol, voice}.
+    return raw.map((entry) =>
+        typeof entry === 'string' ? { symbol: entry, voice: DEFAULT_VOICE } : entry
+    );
 }
 
 function saveWatchlist() {
@@ -102,13 +109,14 @@ async function fetchPrices() {
         return;
     }
 
-    const settled = await Promise.allSettled(watchlist.map(fetchOneQuote));
+    const symbols = watchlist.map((w) => w.symbol);
+    const settled = await Promise.allSettled(symbols.map(fetchOneQuote));
     const quotes = {};
     let marketOpenCount = 0;
     let anyOk = false;
 
     settled.forEach((result, i) => {
-        const symbol = watchlist[i];
+        const symbol = symbols[i];
         if (result.status !== 'fulfilled') {
             console.error('Fetch error:', result.reason?.message);
             return;
@@ -167,8 +175,8 @@ ipcMain.handle('watchlist:get', () => watchlist);
 
 ipcMain.handle('watchlist:add', (_event, symbol) => {
     symbol = String(symbol).toUpperCase().trim();
-    if (symbol && !watchlist.includes(symbol)) {
-        watchlist.push(symbol);
+    if (symbol && !watchlist.some((w) => w.symbol === symbol)) {
+        watchlist.push({ symbol, voice: DEFAULT_VOICE });
         saveWatchlist();
         fetchPrices();
     }
@@ -176,9 +184,18 @@ ipcMain.handle('watchlist:add', (_event, symbol) => {
 });
 
 ipcMain.handle('watchlist:remove', (_event, symbol) => {
-    watchlist = watchlist.filter((s) => s !== symbol);
+    watchlist = watchlist.filter((w) => w.symbol !== symbol);
     delete lastQuotes[symbol];
     saveWatchlist();
+    return watchlist;
+});
+
+ipcMain.handle('watchlist:setVoice', (_event, symbol, voiceId) => {
+    const entry = watchlist.find((w) => w.symbol === symbol);
+    if (entry) {
+        entry.voice = voiceId;
+        saveWatchlist();
+    }
     return watchlist;
 });
 
