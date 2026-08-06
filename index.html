@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LuxeTrade | Elite Market Watch</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        serif: ['"Playfair Display"', 'serif'],
+                        sans: ['"Inter"', 'sans-serif'],
+                    },
+                    colors: {
+                        gold: { 400: '#D4AF37', 500: '#C5A028', 600: '#AA8925' },
+                        dark: { 900: '#0a0a0a', glass: 'rgba(20, 20, 20, 0.7)' }
+                    },
+                    animation: {
+                        'fade-in': 'fadeIn 0.5s ease-out forwards',
+                    },
+                    keyframes: {
+                        fadeIn: { '0%': { opacity: 0, transform: 'translateY(10px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #050505;
+            background-image: radial-gradient(circle at 50% 0%, #1a1a1a 0%, #050505 100%);
+            color: #e5e5e5;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+        .glass-input {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        .glass-input:focus { outline: none; border-color: #D4AF37; box-shadow: 0 0 10px rgba(212, 175, 55, 0.2); }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #D4AF37; }
+
+        .price-up { color: #4ade80; text-shadow: 0 0 15px rgba(74, 222, 128, 0.2); }
+        .price-down { color: #f87171; text-shadow: 0 0 15px rgba(248, 113, 113, 0.2); }
+        
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .toast-enter { animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased selection:bg-gold-400 selection:text-black">
+
+    <div class="max-w-6xl mx-auto px-6 py-12">
+        
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-16 border-b border-white/10 pb-8">
+            <div class="text-center md:text-left mb-6 md:mb-0">
+                <h1 class="font-serif text-5xl text-transparent bg-clip-text bg-gradient-to-r from-gold-400 via-yellow-200 to-gold-600 tracking-wide">
+                    LuxeTrade
+                </h1>
+                <p class="text-gray-500 mt-2 tracking-widest uppercase text-xs">Private Wealth Management Interface</p>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-3 glass-card px-5 py-2.5 rounded-full transition-all duration-500" id="market-badge">
+                    <div id="status-dot" class="w-2 h-2 rounded-full bg-gray-500 transition-colors duration-500"></div>
+                    <span id="market-status" class="text-xs uppercase tracking-wider text-gray-400 font-semibold">Connecting...</span>
+                </div>
+                <button onclick="toggleSound()" id="sound-btn" class="p-3 rounded-full hover:bg-white/5 transition text-gold-400 border border-gold-400/30" title="Toggle Sound">
+                    <i class="ph ph-speaker-high text-xl"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Controls -->
+        <section class="mb-12">
+            <div class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-gold-400 to-transparent"></div>
+                <h2 class="font-serif text-2xl mb-6 text-white">Portfolio Watchlist</h2>
+                
+                <form id="add-stock-form" class="flex flex-col md:flex-row gap-4">
+                    <input type="text" id="symbol-input" placeholder="Enter Ticker (e.g., AAPL, TSLA, BTC-USD)" 
+                        class="flex-grow glass-input px-6 py-4 rounded-lg font-light text-lg tracking-wide placeholder-gray-600 uppercase">
+                    <button type="submit" class="bg-gradient-to-r from-gold-600 to-gold-400 text-black font-semibold px-8 py-4 rounded-lg hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all duration-300 transform hover:-translate-y-0.5">
+                        ADD ASSET
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <!-- Stock Grid -->
+        <section id="stock-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></section>
+
+        <!-- Empty State -->
+        <div id="empty-state" class="hidden text-center py-20 opacity-50">
+            <i class="ph ph-chart-line-up text-6xl text-gold-400 mb-4"></i>
+            <p class="font-serif text-xl">Your portfolio is empty.</p>
+        </div>
+    </div>
+
+    <!-- Notification Area -->
+    <div id="notification-area" class="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none"></div>
+
+    <script>
+        // --- STATE MANAGEMENT ---
+        // Watchlist and live prices live in the Electron main process (main.js);
+        // this renderer just reflects whatever it's sent over IPC via preload.js.
+        let watchlist = [];
+        let stockData = {};
+        let soundEnabled = true;
+
+        // Web Audio API Synthesizer for Premium Sounds
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playTone(type) {
+            if (!soundEnabled || audioCtx.state === 'suspended') {
+                if(audioCtx.state === 'suspended') audioCtx.resume();
+                if(!soundEnabled) return;
+            }
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+
+            if (type === 'up') {
+                // Luxury Chime: Sine wave with harmonic overtone
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.exponentialRampToValueAtTime(1046.5, now + 0.1); // C6
+                gain.gain.setValueAtTime(0.08, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+                osc.start(now);
+                osc.stop(now + 0.6);
+            } else {
+                // Soft Alert: Triangle wave descending
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(400, now);
+                osc.frequency.linearRampToValueAtTime(200, now + 0.3);
+                gain.gain.setValueAtTime(0.08, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+                osc.start(now);
+                osc.stop(now + 0.4);
+            }
+        }
+
+        // --- DATA FROM MAIN PROCESS (IPC) ---
+        // main.js fetches Yahoo Finance directly (no CORS restrictions in Node)
+        // and pushes updates here every 15s.
+        window.luxeAPI.onPricesUpdate(({ quotes, marketOpen }) => {
+            processQuotes(quotes);
+            updateMarketStatus(marketOpen);
+        });
+
+        window.luxeAPI.onPricesError((message) => {
+            document.getElementById('market-status').innerText = 'Data Delayed';
+            console.error('Price fetch error:', message);
+        });
+
+        function processQuotes(quotes) {
+            Object.entries(quotes).forEach(([symbol, quote]) => {
+                if (quote.direction === 'up') {
+                    playTone('up');
+                    showNotification(`${symbol} ▲ $${quote.price.toFixed(2)}`, 'up');
+                } else if (quote.direction === 'down') {
+                    playTone('down');
+                    showNotification(`${symbol} ▼ $${quote.price.toFixed(2)}`, 'down');
+                }
+
+                stockData[symbol] = {
+                    price: quote.price,
+                    change: quote.change,
+                    volume: quote.volume,
+                    state: quote.state,
+                    flash: quote.direction,
+                };
+            });
+
+            renderGrid();
+
+            // Clear flash after animation
+            setTimeout(() => {
+                Object.keys(stockData).forEach(k => stockData[k].flash = null);
+                renderGrid();
+            }, 2000);
+        }
+
+        function updateMarketStatus(isOpen) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('market-status');
+            const badge = document.getElementById('market-badge');
+
+            if (isOpen) {
+                dot.className = "w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]";
+                text.innerText = "MARKET OPEN";
+                text.className = "text-xs uppercase tracking-wider text-emerald-400 font-semibold";
+            } else {
+                dot.className = "w-2 h-2 rounded-full bg-amber-400";
+                text.innerText = "AFTER HOURS";
+                text.className = "text-xs uppercase tracking-wider text-amber-400 font-semibold";
+            }
+        }
+
+        // --- UI RENDERING ---
+        function renderGrid() {
+            const grid = document.getElementById('stock-grid');
+            const emptyState = document.getElementById('empty-state');
+            grid.innerHTML = '';
+
+            if (watchlist.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            } else {
+                emptyState.classList.add('hidden');
+            }
+
+            watchlist.forEach(symbol => {
+                const data = stockData[symbol] || { price: 0, change: 0, volume: 0 };
+                const isUp = data.change >= 0;
+                const colorClass = isUp ? 'price-up' : 'price-down';
+                const arrow = isUp ? 'ph-trend-up' : 'ph-trend-down';
+                
+                // Dynamic Border Glow based on movement
+                let borderStyle = 'border-white/5';
+                if(data.flash === 'up') borderStyle = 'border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.15)]';
+                if(data.flash === 'down') borderStyle = 'border-rose-500/60 shadow-[0_0_30px_rgba(244,63,94,0.15)]';
+
+                const card = document.createElement('div');
+                card.className = `glass-card p-8 rounded-2xl transition-all duration-300 ${borderStyle} relative group animate-fade-in`;
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-6">
+                        <div>
+                            <h3 class="font-serif text-3xl text-white tracking-wide">${symbol}</h3>
+                            <span class="text-[10px] text-gray-500 uppercase tracking-[0.2em] mt-1 block">
+                                ${data.state === 'REGULAR' ? 'Live Trading' : 'Extended Hours'}
+                            </span>
+                        </div>
+                        <button onclick="removeStock('${symbol}')" class="text-gray-700 hover:text-rose-400 transition opacity-0 group-hover:opacity-100 p-2">
+                            <i class="ph ph-trash text-lg"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="flex items-baseline gap-4">
+                        <span class="text-5xl font-light text-white tabular-nums tracking-tighter">
+                            ${data.price ? '$' + data.price.toFixed(2) : '---'}
+                        </span>
+                    </div>
+                    
+                    <div class="mt-4 flex items-center gap-2 ${colorClass}">
+                        <div class="p-1.5 rounded-full bg-white/5">
+                            <i class="ph ${arrow} text-lg"></i>
+                        </div>
+                        <span class="text-sm font-medium tabular-nums tracking-wide">
+                            ${Math.abs(data.change).toFixed(2)}% Today
+                        </span>
+                    </div>
+
+                    <div class="mt-8 pt-6 border-t border-white/5 flex justify-between text-xs text-gray-500 font-mono">
+                        <span>VOL ${(data.volume / 1000000).toFixed(1)}M</span>
+                        <span class="${data.flash ? 'text-gold-400' : ''}">● UPDATING</span>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        // --- ACTIONS ---
+        async function addStock(symbol) {
+            symbol = symbol.toUpperCase().trim();
+            if (!symbol) return;
+            watchlist = await window.luxeAPI.addStock(symbol);
+            renderGrid();
+        }
+
+        async function removeStock(symbol) {
+            delete stockData[symbol];
+            watchlist = await window.luxeAPI.removeStock(symbol);
+            renderGrid();
+        }
+
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            const btn = document.getElementById('sound-btn');
+            const icon = btn.querySelector('i');
+            btn.classList.toggle('opacity-50', !soundEnabled);
+            icon.className = soundEnabled ? 'ph ph-speaker-high text-xl' : 'ph ph-speaker-slash text-xl';
+        }
+
+        function showNotification(msg, type) {
+            const area = document.getElementById('notification-area');
+            const notif = document.createElement('div');
+            const borderColor = type === 'up' ? 'border-l-emerald-500' : 'border-l-rose-500';
+            
+            notif.className = `glass-card px-6 py-4 rounded-r border-l-4 ${borderColor} flex items-center gap-3 toast-enter min-w-[280px]`;
+            notif.innerHTML = `
+                <i class="ph ${type === 'up' ? 'ph-arrow-up-right' : 'ph-arrow-down-right'} text-xl ${type === 'up' ? 'text-emerald-400' : 'text-rose-400'}"></i>
+                <span class="text-sm font-medium text-white">${msg}</span>
+            `;
+            
+            area.appendChild(notif);
+            setTimeout(() => {
+                notif.style.opacity = '0';
+                notif.style.transform = 'translateX(20px)';
+                setTimeout(() => notif.remove(), 300);
+            }, 3000);
+        }
+
+        // --- INITIALIZATION ---
+        document.getElementById('add-stock-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const input = document.getElementById('symbol-input');
+            addStock(input.value);
+            input.value = '';
+        });
+
+        // Initial Load — watchlist and polling live in main.js; just render
+        // whatever the current watchlist is, then wait for the first IPC push.
+        (async () => {
+            watchlist = await window.luxeAPI.getWatchlist();
+            renderGrid();
+        })();
+
+    </script>
+</body>
+</html>
