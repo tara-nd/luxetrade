@@ -523,6 +523,10 @@ async function fetchPrices() {
             volume: meta.regularMarketVolume || 0,
             state: marketState,
             direction,
+            dayLow: meta.regularMarketDayLow ?? null,
+            dayHigh: meta.regularMarketDayHigh ?? null,
+            weekLow: meta.fiftyTwoWeekLow ?? null,
+            weekHigh: meta.fiftyTwoWeekHigh ?? null,
         };
 
         // Fire a native OS notification when the window isn't focused, so the
