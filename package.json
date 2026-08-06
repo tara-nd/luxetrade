@@ -1,11 +1,11 @@
 {
   "name": "luxetrade",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Desktop market watch with audio price alerts",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder --publish never && node scripts/fix-update-filenames.js"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +26,14 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "tara-nd",
+      "repo": "luxetrade"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

@@ -40,7 +40,9 @@
     <style>
         body {
             background-color: #050505;
-            background-image: radial-gradient(circle at 50% 0%, #1a1a1a 0%, #050505 100%);
+            background-image:
+                radial-gradient(circle at 15% 0%, rgba(212, 175, 55, 0.05) 0%, transparent 45%),
+                radial-gradient(circle at 50% 0%, #1a1a1a 0%, #050505 100%);
             color: #e5e5e5;
         }
         .glass-card {
@@ -49,14 +51,47 @@
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.25s ease;
+        }
+        .stock-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(255, 255, 255, 0.16);
         }
         .glass-input {
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.1);
             color: white;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
-        .glass-input:focus { outline: none; border-color: #D4AF37; box-shadow: 0 0 10px rgba(212, 175, 55, 0.2); }
-        
+        .glass-input:focus-within, .glass-input:focus { outline: none; border-color: #D4AF37; box-shadow: 0 0 10px rgba(212, 175, 55, 0.2); }
+
+        /* Custom-styled <select> so it matches the glass aesthetic instead of
+           the browser's default dropdown chrome. */
+        .select-glass {
+            background-color: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%23D4AF37' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 0.65rem center;
+            padding-right: 1.75rem;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .select-glass:focus { outline: none; border-color: #D4AF37; box-shadow: 0 0 10px rgba(212, 175, 55, 0.2); }
+
+        /* Accordion panel that animates open/closed without a fixed max-height. */
+        .settings-panel {
+            display: grid;
+            grid-template-rows: 0fr;
+            transition: grid-template-rows 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .settings-panel.expanded { grid-template-rows: 1fr; }
+        .settings-panel > div { overflow: hidden; }
+
+        .brand-glow { filter: drop-shadow(0 0 24px rgba(212, 175, 55, 0.18)); }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: #0a0a0a; }
@@ -65,46 +100,63 @@
 
         .price-up { color: #4ade80; text-shadow: 0 0 15px rgba(74, 222, 128, 0.2); }
         .price-down { color: #f87171; text-shadow: 0 0 15px rgba(248, 113, 113, 0.2); }
-        
+
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         .toast-enter { animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+        @keyframes softPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+        .pulse-dot { animation: softPulse 2s ease-in-out infinite; }
     </style>
 </head>
 <body class="min-h-screen font-sans antialiased selection:bg-gold-400 selection:text-black">
 
     <div class="max-w-6xl mx-auto px-6 py-12">
-        
+
         <!-- Header -->
-        <header class="flex flex-col md:flex-row justify-between items-center mb-16 border-b border-white/10 pb-8">
-            <div class="text-center md:text-left mb-6 md:mb-0">
-                <h1 class="font-serif text-5xl text-transparent bg-clip-text bg-gradient-to-r from-gold-400 via-yellow-200 to-gold-600 tracking-wide">
-                    LuxeTrade
-                </h1>
-                <p class="text-gray-500 mt-2 tracking-widest uppercase text-xs">Private Wealth Management Interface</p>
+        <header class="flex flex-col md:flex-row justify-between items-center mb-14 border-b border-white/10 pb-8">
+            <div class="text-center md:text-left mb-6 md:mb-0 flex items-center gap-4">
+                <div class="w-11 h-11 rounded-full border border-gold-400/40 flex items-center justify-center shrink-0 brand-glow">
+                    <i class="ph-fill ph-crown-simple text-gold-400 text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="font-serif text-4xl text-transparent bg-clip-text bg-gradient-to-r from-gold-400 via-yellow-200 to-gold-600 tracking-wide leading-none brand-glow">
+                        LuxeTrade
+                    </h1>
+                    <p class="text-gray-500 mt-1.5 tracking-[0.2em] uppercase text-[10px]">Private Wealth Management Interface</p>
+                </div>
             </div>
-            
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-3 glass-card px-5 py-2.5 rounded-full transition-all duration-500" id="market-badge">
-                    <div id="status-dot" class="w-2 h-2 rounded-full bg-gray-500 transition-colors duration-500"></div>
+
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-3 glass-card px-5 py-2.5 rounded-full transition-colors duration-500" id="market-badge">
+                    <span class="relative flex h-2 w-2">
+                        <span id="status-dot-ping" class="hidden animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span id="status-dot" class="relative inline-flex rounded-full h-2 w-2 bg-gray-500 transition-colors duration-500"></span>
+                    </span>
                     <span id="market-status" class="text-xs uppercase tracking-wider text-gray-400 font-semibold">Connecting...</span>
                 </div>
-                <button onclick="toggleSound()" id="sound-btn" class="p-3 rounded-full hover:bg-white/5 transition text-gold-400 border border-gold-400/30" title="Toggle Sound">
+                <button onclick="toggleSound()" id="sound-btn" class="p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="Toggle Sound">
                     <i class="ph ph-speaker-high text-xl"></i>
                 </button>
             </div>
         </header>
 
         <!-- Controls -->
-        <section class="mb-12">
-            <div class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+        <section class="mb-10">
+            <div class="glass-card p-6 md:p-8 rounded-2xl relative overflow-hidden">
                 <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-gold-400 to-transparent"></div>
-                <h2 class="font-serif text-2xl mb-6 text-white">Portfolio Watchlist</h2>
-                
-                <form id="add-stock-form" class="flex flex-col md:flex-row gap-4">
-                    <input type="text" id="symbol-input" placeholder="Enter Ticker (e.g., AAPL, TSLA, BTC-USD)" 
-                        class="flex-grow glass-input px-6 py-4 rounded-lg font-light text-lg tracking-wide placeholder-gray-600 uppercase">
-                    <button type="submit" class="bg-gradient-to-r from-gold-600 to-gold-400 text-black font-semibold px-8 py-4 rounded-lg hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all duration-300 transform hover:-translate-y-0.5">
-                        ADD ASSET
+                <div class="flex items-center gap-2 mb-5">
+                    <i class="ph ph-briefcase text-gold-400 text-lg"></i>
+                    <h2 class="font-serif text-xl text-white">Portfolio Watchlist</h2>
+                </div>
+
+                <form id="add-stock-form" class="flex flex-col md:flex-row gap-3">
+                    <div class="glass-input flex-grow rounded-lg flex items-center px-5">
+                        <i class="ph ph-magnifying-glass text-gray-600 mr-3"></i>
+                        <input type="text" id="symbol-input" placeholder="Enter Ticker — AAPL, TSLA, BTC-USD..."
+                            class="flex-grow bg-transparent py-4 font-light text-lg tracking-wide placeholder-gray-600 uppercase focus:outline-none">
+                    </div>
+                    <button type="submit" class="flex items-center justify-center gap-2 bg-gradient-to-r from-gold-600 to-gold-400 text-black font-semibold px-8 py-4 rounded-lg hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all duration-300 transform hover:-translate-y-0.5">
+                        <i class="ph-bold ph-plus"></i> ADD ASSET
                     </button>
                 </form>
             </div>
@@ -114,9 +166,10 @@
         <section id="stock-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></section>
 
         <!-- Empty State -->
-        <div id="empty-state" class="hidden text-center py-20 opacity-50">
-            <i class="ph ph-chart-line-up text-6xl text-gold-400 mb-4"></i>
-            <p class="font-serif text-xl">Your portfolio is empty.</p>
+        <div id="empty-state" class="hidden text-center py-24">
+            <i class="ph ph-chart-line-up text-6xl text-gold-400/60 mb-5 block"></i>
+            <p class="font-serif text-2xl text-gray-300">Your portfolio is empty.</p>
+            <p class="text-gray-600 text-sm mt-2 tracking-wide">Add a ticker above to start watching it live.</p>
         </div>
     </div>
 
@@ -130,6 +183,11 @@
         let watchlist = [];
         let stockData = {};
         let soundEnabled = true;
+
+        // Which cards have their Sound/Alerts panel expanded. Purely a
+        // renderer-side UI concern (not persisted) — kept in a module-level
+        // Set so it survives the full-DOM rebuild renderGrid() does on every tick.
+        let expandedCards = new Set();
 
         // Web Audio API Synthesizer for Premium Sounds
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -211,9 +269,49 @@
             synth(audioCtx.currentTime, direction === 'up');
         }
 
-        function getVoiceForSymbol(symbol) {
-            return watchlist.find(w => w.symbol === symbol)?.voice || 'chime';
+        // Custom uploads play via <audio> instead of Web Audio synthesis, so
+        // resolving "what should this stock+direction sound like" has to check
+        // both — this is the single place that decides which path to take.
+        function playSoundForDirection(symbol, direction, force = false) {
+            const entry = watchlist.find(w => w.symbol === symbol);
+            const voiceId = entry ? (direction === 'up' ? entry.voiceUp : entry.voiceDown) : 'chime';
+            const customUrl = entry ? (direction === 'up' ? entry.customUpUrl : entry.customDownUrl) : null;
+
+            if (voiceId === 'custom' && customUrl) {
+                playCustomAudio(customUrl, force);
+            } else {
+                playVoice(voiceId || 'chime', direction, force);
+            }
         }
+
+        function playCustomAudio(url, force = false) {
+            if (!force && !soundEnabled) return;
+            const audio = new Audio(url);
+            audio.play().catch(err => console.error('Custom sound playback failed:', err.message));
+        }
+
+        // A price-target alert is deliberately distinct from the per-stock voice
+        // (a triple alarm beep) so a hit target is unmistakable no matter what
+        // voice that stock is set to.
+        function playAlert(kind) {
+            if (!soundEnabled) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const now = audioCtx.currentTime;
+            const isUp = kind === 'above';
+            [0, 1, 2].forEach(i => tone(now + i * 0.12, {
+                type: 'square',
+                f1: isUp ? 700 : 700,
+                f2: isUp ? 1200 : 300,
+                dur: 0.16,
+                gain: 0.09,
+            }));
+        }
+
+        window.luxeAPI.onAlertTriggered(({ symbol, kind, price, target }) => {
+            playAlert(kind);
+            const msg = `🎯 ${symbol} ${kind === 'above' ? 'reached' : 'dropped to'} $${price.toFixed(2)} (target $${target.toFixed(2)})`;
+            showNotification(msg, kind === 'above' ? 'up' : 'down');
+        });
 
         // --- DATA FROM MAIN PROCESS (IPC) ---
         // main.js fetches Yahoo Finance directly (no CORS restrictions in Node)
@@ -231,10 +329,10 @@
         function processQuotes(quotes) {
             Object.entries(quotes).forEach(([symbol, quote]) => {
                 if (quote.direction === 'up') {
-                    playVoice(getVoiceForSymbol(symbol), 'up');
+                    playSoundForDirection(symbol, 'up');
                     showNotification(`${symbol} ▲ $${quote.price.toFixed(2)}`, 'up');
                 } else if (quote.direction === 'down') {
-                    playVoice(getVoiceForSymbol(symbol), 'down');
+                    playSoundForDirection(symbol, 'down');
                     showNotification(`${symbol} ▼ $${quote.price.toFixed(2)}`, 'down');
                 }
 
@@ -258,15 +356,17 @@
 
         function updateMarketStatus(isOpen) {
             const dot = document.getElementById('status-dot');
+            const ping = document.getElementById('status-dot-ping');
             const text = document.getElementById('market-status');
-            const badge = document.getElementById('market-badge');
 
             if (isOpen) {
-                dot.className = "w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]";
+                dot.className = "relative inline-flex rounded-full h-2 w-2 bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]";
+                ping.classList.remove('hidden');
                 text.innerText = "MARKET OPEN";
                 text.className = "text-xs uppercase tracking-wider text-emerald-400 font-semibold";
             } else {
-                dot.className = "w-2 h-2 rounded-full bg-amber-400";
+                dot.className = "relative inline-flex rounded-full h-2 w-2 bg-amber-400";
+                ping.classList.add('hidden');
                 text.innerText = "AFTER HOURS";
                 text.className = "text-xs uppercase tracking-wider text-amber-400 font-semibold";
             }
@@ -276,6 +376,16 @@
         function renderGrid() {
             const grid = document.getElementById('stock-grid');
             const emptyState = document.getElementById('empty-state');
+
+            // renderGrid rebuilds every card from scratch on each price tick.
+            // If the user is mid-edit in an alert input when a tick lands, that
+            // would normally steal focus/cursor out from under them — so capture
+            // it here and restore it after the rebuild below.
+            const active = document.activeElement;
+            const focusRestore = (active && active.dataset && active.dataset.alertInput)
+                ? { symbol: active.dataset.symbol, field: active.dataset.alertInput, selStart: active.selectionStart, selEnd: active.selectionEnd }
+                : null;
+
             grid.innerHTML = '';
 
             if (watchlist.length === 0) {
@@ -285,69 +395,137 @@
                 emptyState.classList.add('hidden');
             }
 
-            watchlist.forEach(({ symbol, voice }) => {
+            watchlist.forEach(({ symbol, voiceUp, voiceDown, customUpName, customDownName, alertAbove, alertBelow }) => {
                 const data = stockData[symbol] || { price: 0, change: 0, volume: 0 };
                 const isUp = data.change >= 0;
                 const colorClass = isUp ? 'price-up' : 'price-down';
                 const arrow = isUp ? 'ph-trend-up' : 'ph-trend-down';
+                const pillBg = isUp ? 'bg-emerald-500/10' : 'bg-rose-500/10';
 
-                // Dynamic Border Glow based on movement
+                // Dynamic border glow on a price tick, layered on top of the
+                // resting border so a move is unmistakable for a couple seconds.
                 let borderStyle = 'border-white/5';
-                if(data.flash === 'up') borderStyle = 'border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.15)]';
-                if(data.flash === 'down') borderStyle = 'border-rose-500/60 shadow-[0_0_30px_rgba(244,63,94,0.15)]';
+                if (data.flash === 'up') borderStyle = 'border-emerald-500/60 shadow-[0_0_30px_rgba(16,185,129,0.15)]';
+                if (data.flash === 'down') borderStyle = 'border-rose-500/60 shadow-[0_0_30px_rgba(244,63,94,0.15)]';
+
+                const isExpanded = expandedCards.has(symbol);
+                const hasCustomConfig = alertAbove != null || alertBelow != null || voiceUp !== 'chime' || voiceDown !== 'chime';
 
                 const card = document.createElement('div');
-                card.className = `glass-card p-8 rounded-2xl transition-all duration-300 ${borderStyle} relative group animate-fade-in`;
+                card.className = `stock-card glass-card p-7 rounded-2xl duration-300 ${borderStyle} relative group animate-fade-in`;
                 card.innerHTML = `
-                    <div class="flex justify-between items-start mb-6">
+                    <div class="flex justify-between items-start mb-5">
                         <div>
-                            <h3 class="font-serif text-3xl text-white tracking-wide">${symbol}</h3>
-                            <span class="text-[10px] text-gray-500 uppercase tracking-[0.2em] mt-1 block">
+                            <h3 class="font-serif text-2xl text-white tracking-wide">${symbol}</h3>
+                            <span class="text-[10px] text-gray-500 uppercase tracking-[0.2em] mt-1 flex items-center gap-1.5">
+                                <span class="w-1 h-1 rounded-full ${data.state === 'REGULAR' ? 'bg-emerald-400' : 'bg-gray-600'}"></span>
                                 ${data.state === 'REGULAR' ? 'Live Trading' : 'Extended Hours'}
                             </span>
                         </div>
-                        <button onclick="removeStock('${symbol}')" class="text-gray-700 hover:text-rose-400 transition opacity-0 group-hover:opacity-100 p-2">
-                            <i class="ph ph-trash text-lg"></i>
-                        </button>
-                    </div>
-                    
-                    <div class="flex items-baseline gap-4">
-                        <span class="text-5xl font-light text-white tabular-nums tracking-tighter">
-                            ${data.price ? '$' + data.price.toFixed(2) : '---'}
-                        </span>
-                    </div>
-                    
-                    <div class="mt-4 flex items-center gap-2 ${colorClass}">
-                        <div class="p-1.5 rounded-full bg-white/5">
-                            <i class="ph ${arrow} text-lg"></i>
+                        <div class="flex items-center gap-0.5 transition-opacity duration-200 ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}">
+                            <button onclick="toggleCardSettings('${symbol}')" title="Sound &amp; Alerts"
+                                class="relative p-2 rounded-full hover:bg-white/5 transition-colors ${isExpanded ? 'text-gold-400' : 'text-gray-500'}">
+                                <i class="ph ph-sliders-horizontal text-base"></i>
+                                ${hasCustomConfig ? '<span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-gold-400"></span>' : ''}
+                            </button>
+                            <button onclick="removeStock('${symbol}')" title="Remove"
+                                class="p-2 rounded-full hover:bg-white/5 text-gray-500 hover:text-rose-400 transition-colors">
+                                <i class="ph ph-trash text-base"></i>
+                            </button>
                         </div>
-                        <span class="text-sm font-medium tabular-nums tracking-wide">
-                            ${Math.abs(data.change).toFixed(2)}% Today
+                    </div>
+
+                    <div class="flex items-baseline gap-3">
+                        <span class="text-4xl font-light text-white tabular-nums tracking-tight">
+                            ${data.price ? '$' + data.price.toFixed(2) : '—'}
                         </span>
                     </div>
 
-                    <div class="mt-8 pt-6 border-t border-white/5 flex justify-between text-xs text-gray-500 font-mono">
-                        <span>VOL ${(data.volume / 1000000).toFixed(1)}M</span>
-                        <span class="${data.flash ? 'text-gold-400' : ''}">● UPDATING</span>
+                    <div class="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${pillBg} ${colorClass}">
+                        <i class="ph ${arrow} text-sm"></i>
+                        <span class="text-xs font-semibold tabular-nums">${Math.abs(data.change).toFixed(2)}% Today</span>
                     </div>
 
-                    <div class="mt-4 pt-4 border-t border-white/5 flex items-center gap-2">
-                        <select onchange="setStockVoice('${symbol}', this.value)"
-                            class="glass-input text-xs px-2 py-1.5 rounded flex-grow cursor-pointer">
-                            ${VOICES.map(v => `<option value="${v.id}" ${v.id === voice ? 'selected' : ''}>${v.label}</option>`).join('')}
-                        </select>
-                        <button onclick="playVoice('${voice}', 'up', true)" title="Preview Up Sound"
-                            class="p-2 rounded hover:bg-white/5 text-emerald-400 transition">
-                            <i class="ph ph-arrow-up text-sm"></i>
-                        </button>
-                        <button onclick="playVoice('${voice}', 'down', true)" title="Preview Down Sound"
-                            class="p-2 rounded hover:bg-white/5 text-rose-400 transition">
-                            <i class="ph ph-arrow-down text-sm"></i>
-                        </button>
+                    <div class="mt-6 pt-4 border-t border-white/5 flex justify-between items-center text-[11px] text-gray-500 font-mono tracking-wide">
+                        <span>VOL ${(data.volume / 1000000).toFixed(1)}M</span>
+                        <span class="flex items-center gap-1.5 ${data.flash ? 'text-gold-400' : ''}">
+                            <span class="w-1.5 h-1.5 rounded-full ${data.flash ? 'bg-gold-400' : 'bg-gray-600'} pulse-dot"></span>
+                            UPDATING
+                        </span>
+                    </div>
+
+                    <div class="settings-panel ${isExpanded ? 'expanded' : ''}">
+                        <div>
+                            <div class="mt-5 pt-5 border-t border-white/5 space-y-4">
+                                <div>
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
+                                        <i class="ph ph-speaker-high"></i> Sound
+                                    </p>
+                                    <div class="space-y-2">
+                                        <div class="flex items-center gap-2">
+                                            <i class="ph ph-trend-up text-emerald-400 text-sm w-4 shrink-0" title="Up Sound"></i>
+                                            <select onchange="onSoundSelectChange('${symbol}', 'up', this.value)"
+                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
+                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceUp ? 'selected' : ''}>${v.label}</option>`).join('')}
+                                                <option value="custom" ${voiceUp === 'custom' ? 'selected' : ''}>🎵 ${customUpName || 'Upload...'}</option>
+                                            </select>
+                                            <button onclick="previewSound('${symbol}', 'up')" title="Preview Up Sound"
+                                                class="p-2 rounded-lg hover:bg-white/5 text-emerald-400 transition-colors">
+                                                <i class="ph-fill ph-play-circle text-base"></i>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <i class="ph ph-trend-down text-rose-400 text-sm w-4 shrink-0" title="Down Sound"></i>
+                                            <select onchange="onSoundSelectChange('${symbol}', 'down', this.value)"
+                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
+                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceDown ? 'selected' : ''}>${v.label}</option>`).join('')}
+                                                <option value="custom" ${voiceDown === 'custom' ? 'selected' : ''}>🎵 ${customDownName || 'Upload...'}</option>
+                                            </select>
+                                            <button onclick="previewSound('${symbol}', 'down')" title="Preview Down Sound"
+                                                class="p-2 rounded-lg hover:bg-white/5 text-rose-400 transition-colors">
+                                                <i class="ph-fill ph-play-circle text-base"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
+                                        <i class="ph ph-target"></i> Price Alerts
+                                    </p>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <div class="flex items-center glass-input rounded-lg px-2.5 py-2 gap-1.5">
+                                            <i class="ph ph-arrow-fat-line-up text-emerald-400 text-xs shrink-0"></i>
+                                            <input type="number" step="0.01" placeholder="Above"
+                                                value="${alertAbove ?? ''}"
+                                                data-symbol="${symbol}" data-alert-input="above"
+                                                onchange="setStockAlert('${symbol}', 'above', this.value)"
+                                                class="bg-transparent outline-none text-xs w-full text-white placeholder-gray-600 tabular-nums">
+                                        </div>
+                                        <div class="flex items-center glass-input rounded-lg px-2.5 py-2 gap-1.5">
+                                            <i class="ph ph-arrow-fat-line-down text-rose-400 text-xs shrink-0"></i>
+                                            <input type="number" step="0.01" placeholder="Below"
+                                                value="${alertBelow ?? ''}"
+                                                data-symbol="${symbol}" data-alert-input="below"
+                                                onchange="setStockAlert('${symbol}', 'below', this.value)"
+                                                class="bg-transparent outline-none text-xs w-full text-white placeholder-gray-600 tabular-nums">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
                 grid.appendChild(card);
             });
+
+            if (focusRestore) {
+                const el = grid.querySelector(`[data-symbol="${CSS.escape(focusRestore.symbol)}"][data-alert-input="${focusRestore.field}"]`);
+                if (el) {
+                    el.focus();
+                    el.setSelectionRange(focusRestore.selStart, focusRestore.selEnd);
+                }
+            }
         }
 
         // --- ACTIONS ---
@@ -360,13 +538,45 @@
 
         async function removeStock(symbol) {
             delete stockData[symbol];
+            expandedCards.delete(symbol);
             watchlist = await window.luxeAPI.removeStock(symbol);
             renderGrid();
         }
 
-        async function setStockVoice(symbol, voiceId) {
-            watchlist = await window.luxeAPI.setVoice(symbol, voiceId);
-            playVoice(voiceId, 'up', true); // audition the new voice immediately
+        function toggleCardSettings(symbol) {
+            if (expandedCards.has(symbol)) expandedCards.delete(symbol);
+            else expandedCards.add(symbol);
+            renderGrid();
+        }
+
+        async function setStockVoice(symbol, direction, voiceId) {
+            watchlist = await window.luxeAPI.setVoice(symbol, direction, voiceId);
+            playVoice(voiceId, direction, true); // audition the new voice immediately
+        }
+
+        // Routes a <select> change to either a preset (setStockVoice) or the
+        // native file picker (for "custom"). Always re-renders afterward: if
+        // the user picked "custom" and then canceled the dialog, the select
+        // would otherwise be left visually stuck on "custom" with no file.
+        async function onSoundSelectChange(symbol, direction, value) {
+            if (value === 'custom') {
+                watchlist = await window.luxeAPI.pickCustomSound(symbol, direction);
+                renderGrid();
+            } else {
+                await setStockVoice(symbol, direction, value);
+            }
+        }
+
+        function previewSound(symbol, direction) {
+            playSoundForDirection(symbol, direction, true);
+        }
+
+        async function setStockAlert(symbol, field, rawValue) {
+            const value = rawValue === '' ? null : parseFloat(rawValue);
+            const entry = watchlist.find(w => w.symbol === symbol);
+            const above = field === 'above' ? value : (entry?.alertAbove ?? null);
+            const below = field === 'below' ? value : (entry?.alertBelow ?? null);
+            watchlist = await window.luxeAPI.setAlert(symbol, { above, below });
         }
 
         function toggleSound() {
