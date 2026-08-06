@@ -14,6 +14,9 @@
     <!-- Phosphor Icons -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
 
+    <!-- Chart.js (forecast panel) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
     <script>
         tailwind.config = {
             theme: {
@@ -175,6 +178,58 @@
 
     <!-- Notification Area -->
     <div id="notification-area" class="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none"></div>
+
+    <!-- Forecast Modal -->
+    <div id="forecast-overlay" class="hidden fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-6" onclick="if (event.target === this) closeForecast()">
+        <div class="glass-card w-full max-w-2xl rounded-2xl p-7 md:p-8 relative">
+            <button onclick="closeForecast()" class="absolute top-5 right-5 p-2 rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors">
+                <i class="ph ph-x text-lg"></i>
+            </button>
+
+            <div class="flex items-center gap-2 mb-1">
+                <i class="ph ph-chart-line-up text-gold-400 text-lg"></i>
+                <h2 id="forecast-title" class="font-serif text-xl text-white">Forecast</h2>
+            </div>
+            <p class="text-[11px] text-gray-500 mb-5">Statistical trend extrapolation from recent price history — not a prediction of what will actually happen.</p>
+
+            <div class="flex gap-2 mb-5">
+                <button id="forecast-tab-intraday" onclick="switchForecastTab('intraday')" class="px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors"></button>
+                <button id="forecast-tab-daily" onclick="switchForecastTab('daily')" class="px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors"></button>
+            </div>
+
+            <div id="forecast-body">
+                <div id="forecast-loading" class="py-16 text-center text-gray-500 text-sm">
+                    <i class="ph ph-spinner-gap text-2xl animate-spin inline-block mb-2"></i>
+                    <p>Crunching recent price history…</p>
+                </div>
+                <div id="forecast-error" class="hidden py-16 text-center text-rose-400 text-sm"></div>
+                <div id="forecast-content" class="hidden">
+                    <div class="h-56 mb-5">
+                        <canvas id="forecast-chart"></canvas>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4 text-center">
+                        <div>
+                            <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1">Last Price</p>
+                            <p id="forecast-last-price" class="text-lg font-light text-white tabular-nums">—</p>
+                        </div>
+                        <div>
+                            <p id="forecast-target-label" class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1">Projected</p>
+                            <p id="forecast-target-price" class="text-lg font-light text-white tabular-nums">—</p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1">Trend Strength</p>
+                            <p id="forecast-strength" class="text-lg font-light text-white tabular-nums">—</p>
+                        </div>
+                    </div>
+
+                    <div class="mt-5 pt-4 border-t border-white/5 text-center">
+                        <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1">Track Record (this horizon)</p>
+                        <p id="forecast-accuracy" class="text-xs text-gray-400">—</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script>
         // --- STATE MANAGEMENT ---
@@ -423,6 +478,10 @@
                             </span>
                         </div>
                         <div class="flex items-center gap-0.5 transition-opacity duration-200 ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}">
+                            <button onclick="openForecast('${symbol}')" title="Forecast"
+                                class="p-2 rounded-full hover:bg-white/5 text-gray-500 hover:text-gold-400 transition-colors">
+                                <i class="ph ph-chart-line-up text-base"></i>
+                            </button>
                             <button onclick="toggleCardSettings('${symbol}')" title="Sound &amp; Alerts"
                                 class="relative p-2 rounded-full hover:bg-white/5 transition-colors ${isExpanded ? 'text-gold-400' : 'text-gray-500'}">
                                 <i class="ph ph-sliders-horizontal text-base"></i>
@@ -605,6 +664,197 @@
                 setTimeout(() => notif.remove(), 300);
             }, 3000);
         }
+
+        // --- FORECAST ---
+        // Statistical trend extrapolation (linear regression over recent bars),
+        // computed in main.js. Deliberately framed as a trend line, not a
+        // prediction — R^2 is surfaced as "Trend Strength" so a low-confidence
+        // fit reads as noise rather than a confident forecast.
+        let forecastState = { symbol: null, data: null, tab: 'intraday', chart: null };
+
+        async function openForecast(symbol) {
+            // Destroy any chart left over from a previous symbol before
+            // discarding its state — otherwise Chart.js still holds the
+            // canvas and the next render throws "Canvas is already in use"
+            // (hits in practice when a user opens/closes forecasts quickly,
+            // closing one before its fetch has resolved).
+            forecastState.chart?.destroy();
+            forecastState = { symbol, data: null, tab: 'intraday', chart: null };
+            document.getElementById('forecast-title').textContent = `${symbol} Forecast`;
+            document.getElementById('forecast-loading').classList.remove('hidden');
+            document.getElementById('forecast-error').classList.add('hidden');
+            document.getElementById('forecast-content').classList.add('hidden');
+            document.getElementById('forecast-overlay').classList.remove('hidden');
+
+            const result = await window.luxeAPI.getForecast(symbol);
+            if (forecastState.symbol !== symbol) return; // closed/reopened while awaiting
+
+            document.getElementById('forecast-loading').classList.add('hidden');
+            if (!result.ok) {
+                document.getElementById('forecast-error').textContent = `Couldn't build a forecast: ${result.error}`;
+                document.getElementById('forecast-error').classList.remove('hidden');
+                return;
+            }
+
+            forecastState.data = result.data;
+            document.getElementById('forecast-content').classList.remove('hidden');
+            renderForecastTabs();
+            renderForecastContent();
+        }
+
+        function closeForecast() {
+            document.getElementById('forecast-overlay').classList.add('hidden');
+            forecastState.chart?.destroy();
+            forecastState = { symbol: null, data: null, tab: 'intraday', chart: null };
+        }
+
+        function switchForecastTab(tab) {
+            forecastState.tab = tab;
+            renderForecastTabs();
+            renderForecastContent();
+        }
+
+        function renderForecastTabs() {
+            const tabs = { intraday: 'Next Few Hours', daily: 'Next Few Days' };
+            Object.entries(tabs).forEach(([key, label]) => {
+                const btn = document.getElementById(`forecast-tab-${key}`);
+                btn.textContent = label;
+                const active = forecastState.tab === key;
+                btn.className = `px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wide transition-colors ${
+                    active ? 'bg-gold-400 text-black' : 'glass-input text-gray-400 hover:text-white'
+                }`;
+            });
+        }
+
+        function fmtIntradayLabel(t) {
+            return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+        function fmtDailyLabel(t) {
+            return new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+
+        function renderForecastContent() {
+            const section = forecastState.data[forecastState.tab];
+            const fmtLabel = forecastState.tab === 'intraday' ? fmtIntradayLabel : fmtDailyLabel;
+
+            document.getElementById('forecast-target-label').textContent =
+                forecastState.tab === 'intraday' ? 'Projected (~2.5h)' : 'Projected (~5d)';
+
+            if (!section) {
+                document.getElementById('forecast-last-price').textContent = '—';
+                document.getElementById('forecast-target-price').textContent = 'Not enough data';
+                document.getElementById('forecast-strength').textContent = '—';
+                document.getElementById('forecast-accuracy').textContent = '—';
+                forecastState.chart?.destroy();
+                return;
+            }
+
+            document.getElementById('forecast-last-price').textContent = `$${section.lastPrice.toFixed(2)}`;
+            const arrow = section.changePct >= 0 ? '▲' : '▼';
+            const colorClass = section.changePct >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const targetEl = document.getElementById('forecast-target-price');
+            targetEl.innerHTML = `$${section.forecastPrice.toFixed(2)} <span class="${colorClass} text-sm">${arrow} ${Math.abs(section.changePct).toFixed(2)}%</span>`;
+
+            const strengthEl = document.getElementById('forecast-strength');
+            const r2 = section.r2;
+            let strengthLabel, strengthClass;
+            if (r2 >= 0.7) { strengthLabel = 'Strong'; strengthClass = 'text-emerald-400'; }
+            else if (r2 >= 0.35) { strengthLabel = 'Moderate'; strengthClass = 'text-amber-400'; }
+            else { strengthLabel = 'Weak'; strengthClass = 'text-rose-400'; }
+            strengthEl.textContent = strengthLabel;
+            strengthEl.className = `text-lg font-light tabular-nums ${strengthClass}`;
+
+            const accuracyEl = document.getElementById('forecast-accuracy');
+            const acc = section.accuracy;
+            accuracyEl.textContent = acc
+                ? `${acc.count} past forecasts resolved · avg error ${acc.avgErrorPct.toFixed(1)}% · direction right ${acc.directionAccuracyPct.toFixed(0)}%`
+                : 'Not enough resolved forecasts yet — check back after this plays out a few times.';
+
+            const histLabels = section.points.map((p) => fmtLabel(p.t));
+            const projLabels = section.projected.map((p) => fmtLabel(p.t));
+            const labels = [...histLabels, ...projLabels];
+
+            const histData = [...section.points.map((p) => p.price), ...projLabels.map(() => null)];
+            // Bridge dataset starts one point early (repeating the last actual
+            // price) so the dashed projection line, and the band around it,
+            // connect visually to the solid history line instead of floating
+            // disconnected. The band collapses to zero width at that point
+            // since there's no uncertainty about a price that already happened.
+            const bridge = section.points.slice(0, -1).map(() => null);
+            const lastPrice = section.points[section.points.length - 1].price;
+            const projData = [...bridge, lastPrice, ...section.projected.map((p) => p.price)];
+            const lowerData = [...bridge, lastPrice, ...section.projected.map((p) => p.lower)];
+            const upperData = [...bridge, lastPrice, ...section.projected.map((p) => p.upper)];
+
+            forecastState.chart?.destroy();
+            const ctx = document.getElementById('forecast-chart').getContext('2d');
+            forecastState.chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'History',
+                            data: histData,
+                            borderColor: '#D4AF37',
+                            backgroundColor: 'rgba(212, 175, 55, 0.08)',
+                            pointRadius: 0,
+                            borderWidth: 2,
+                            tension: 0.15,
+                            fill: true,
+                        },
+                        {
+                            label: '_lower',
+                            data: lowerData,
+                            borderWidth: 0,
+                            pointRadius: 0,
+                            fill: false,
+                            tension: 0.15,
+                        },
+                        {
+                            // ~90% uncertainty band around the projection — filled
+                            // back to the lower-bound dataset directly above it.
+                            label: '_upper',
+                            data: upperData,
+                            borderWidth: 0,
+                            pointRadius: 0,
+                            backgroundColor: section.changePct >= 0 ? 'rgba(74, 222, 128, 0.12)' : 'rgba(248, 113, 113, 0.12)',
+                            fill: '-1',
+                            tension: 0.15,
+                        },
+                        {
+                            label: 'Projected',
+                            data: projData,
+                            borderColor: section.changePct >= 0 ? '#4ade80' : '#f87171',
+                            borderDash: [6, 4],
+                            pointRadius: 0,
+                            borderWidth: 2,
+                            tension: 0.15,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            filter: (item) => !item.dataset.label.startsWith('_'),
+                            callbacks: { label: (item) => item.formattedValue !== null ? `$${item.formattedValue}` : '' },
+                        },
+                    },
+                    scales: {
+                        x: { ticks: { color: '#6b7280', maxTicksLimit: 6, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                        y: { ticks: { color: '#6b7280', font: { size: 10 }, callback: (v) => `$${v.toFixed(0)}` }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                    },
+                },
+            });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !document.getElementById('forecast-overlay').classList.contains('hidden')) closeForecast();
+        });
 
         // --- INITIALIZATION ---
         document.getElementById('add-stock-form').addEventListener('submit', (e) => {

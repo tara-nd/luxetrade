@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('luxeAPI', {
     pickCustomSound: (symbol, direction) => ipcRenderer.invoke('sound:pickCustom', symbol, direction),
     setAlert: (symbol, { above, below }) => ipcRenderer.invoke('watchlist:setAlert', symbol, { above, below }),
     refresh: () => ipcRenderer.invoke('prices:refresh'),
+    getForecast: (symbol) => ipcRenderer.invoke('forecast:get', symbol),
     onPricesUpdate: (callback) => {
         ipcRenderer.on('prices:update', (_event, payload) => callback(payload));
     },

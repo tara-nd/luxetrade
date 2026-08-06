@@ -265,6 +265,224 @@ function fireAlert(symbol, kind, price, target) {
     }
 }
 
+// --- FORECAST (statistical trend extrapolation, not a real prediction) ---
+// Cache per-symbol so opening the forecast panel repeatedly within a short
+// window doesn't hammer Yahoo with two extra history fetches every time.
+const FORECAST_CACHE_MS = 60 * 1000;
+let forecastCache = {}; // symbol -> { data, ts }
+
+// --- Forecast accuracy tracking ---
+// Every time a forecast is (re)built we log a snapshot, then once its target
+// time has passed we compare it to whatever price we're seeing then. That's
+// an approximation — we don't keep a full tick-by-tick history, so "actual"
+// is just the live quote at (or shortly after) the target time — but it's
+// enough to show whether this symbol's trend-following has been remotely
+// useful, rather than asking the user to trust R^2 alone.
+const FORECAST_HISTORY_FILE = path.join(app.getPath('userData'), 'forecast-history.json');
+const MAX_HISTORY_PER_BUCKET = 50;
+let forecastHistory = loadForecastHistory(); // { [symbol]: { intraday: Entry[], daily: Entry[] } }
+
+function loadForecastHistory() {
+    try {
+        return JSON.parse(fs.readFileSync(FORECAST_HISTORY_FILE, 'utf-8'));
+    } catch {
+        return {};
+    }
+}
+
+function saveForecastHistory() {
+    fs.writeFileSync(FORECAST_HISTORY_FILE, JSON.stringify(forecastHistory));
+}
+
+// Throttled to roughly one sample per bar interval, so reopening the panel
+// repeatedly doesn't flood the history with near-duplicate in-flight samples.
+function recordForecastSample(symbol, horizon, summary, stepMs) {
+    if (!summary) return;
+    const now = Date.now();
+    const targetT = summary.projected[summary.projected.length - 1]?.t ?? now;
+    // When the underlying bars are stale (e.g. market closed for hours), the
+    // projected target time can already be in the past the moment it's
+    // computed — that would "resolve" instantly against whatever the live
+    // quote happens to be, which isn't a real forecast-then-wait sample.
+    if (targetT <= now) return;
+
+    forecastHistory[symbol] ??= { intraday: [], daily: [] };
+    const bucket = forecastHistory[symbol][horizon];
+    const last = bucket[bucket.length - 1];
+    if (last && now - last.generatedAt < stepMs) return;
+
+    bucket.push({
+        generatedAt: now,
+        targetT,
+        lastPrice: summary.lastPrice,
+        forecastPrice: summary.forecastPrice,
+        actualPrice: null,
+        resolved: false,
+    });
+    if (bucket.length > MAX_HISTORY_PER_BUCKET) bucket.splice(0, bucket.length - MAX_HISTORY_PER_BUCKET);
+    saveForecastHistory();
+}
+
+// Called on every price poll: sweeps all pending forecasts across the whole
+// watchlist and resolves any whose target time has arrived using whatever
+// quote we currently have for that symbol.
+function resolvePendingForecasts() {
+    let changed = false;
+    for (const [symbol, horizons] of Object.entries(forecastHistory)) {
+        const currentPrice = lastQuotes[symbol]?.price;
+        if (currentPrice == null) continue;
+        for (const bucket of Object.values(horizons)) {
+            for (const entry of bucket) {
+                if (entry.resolved || Date.now() < entry.targetT) continue;
+                entry.actualPrice = currentPrice;
+                entry.resolved = true;
+                changed = true;
+            }
+        }
+    }
+    if (changed) saveForecastHistory();
+}
+
+function computeAccuracy(symbol, horizon) {
+    const resolved = (forecastHistory[symbol]?.[horizon] || []).filter((e) => e.resolved);
+    if (resolved.length < 3) return null; // too few samples to mean anything
+
+    let errSum = 0, directionHits = 0;
+    resolved.forEach((e) => {
+        errSum += Math.abs((e.actualPrice - e.forecastPrice) / e.actualPrice) * 100;
+        const forecastDir = Math.sign(e.forecastPrice - e.lastPrice);
+        const actualDir = Math.sign(e.actualPrice - e.lastPrice);
+        if (forecastDir !== 0 && forecastDir === actualDir) directionHits++;
+    });
+
+    return {
+        count: resolved.length,
+        avgErrorPct: errSum / resolved.length,
+        directionAccuracyPct: (directionHits / resolved.length) * 100,
+    };
+}
+
+async function fetchHistory(symbol, range, interval) {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
+    const res = await fetch(url, { headers: YAHOO_HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${symbol} history`);
+    const json = await res.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) throw new Error(`No history for ${symbol}`);
+    const timestamps = result.timestamp || [];
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    const points = [];
+    for (let i = 0; i < timestamps.length; i++) {
+        if (closes[i] != null) points.push({ t: timestamps[i] * 1000, price: closes[i] });
+    }
+    return points;
+}
+
+// Ordinary least squares of price against bar index. R^2 tells the UI how
+// well a straight line actually fits — choppy/flat tape gets a low score,
+// which matters more here than the slope itself since prices are close to
+// a random walk and a "confident" trend line is often just noise.
+function linearRegression(points) {
+    const n = points.length;
+    if (n < 2) return null;
+
+    const xMean = (n - 1) / 2;
+    const yMean = points.reduce((sum, p) => sum + p.price, 0) / n;
+    let num = 0, sxx = 0;
+    points.forEach((p, x) => {
+        num += (x - xMean) * (p.price - yMean);
+        sxx += (x - xMean) ** 2;
+    });
+    const slope = sxx === 0 ? 0 : num / sxx;
+    const intercept = yMean - slope * xMean;
+
+    let ssRes = 0, ssTot = 0;
+    points.forEach((p, x) => {
+        const pred = slope * x + intercept;
+        ssRes += (p.price - pred) ** 2;
+        ssTot += (p.price - yMean) ** 2;
+    });
+    const r2 = ssTot === 0 ? 0 : Math.max(0, 1 - ssRes / ssTot);
+    const stdErr = Math.sqrt(ssRes / Math.max(1, n - 2));
+
+    return { slope, intercept, r2, n, xMean, sxx, stdErr };
+}
+
+// Anchored to the actual last price (not the fitted line's value at that x),
+// so the projection continues smoothly from where the price really is rather
+// than jumping to wherever OLS says it "should" be. Each step also carries a
+// widening uncertainty band (~90% OLS prediction interval) so the chart is
+// honest that a point 2 hours out is far less certain than one 15 minutes out.
+function projectForward(points, reg, stepsAhead, stepMs) {
+    const last = points[points.length - 1];
+    const projected = [];
+    for (let i = 1; i <= stepsAhead; i++) {
+        const x = reg.n - 1 + i;
+        const price = last.price + reg.slope * i;
+        const sePred = reg.sxx === 0
+            ? reg.stdErr
+            : reg.stdErr * Math.sqrt(1 + 1 / reg.n + ((x - reg.xMean) ** 2) / reg.sxx);
+        const margin = 1.645 * sePred; // ~90% interval
+        projected.push({ t: last.t + i * stepMs, price, lower: price - margin, upper: price + margin });
+    }
+    return projected;
+}
+
+function summarizeForecast(points, reg, projected) {
+    if (!points.length || !reg) return null;
+    const lastPrice = points[points.length - 1].price;
+    const forecastPrice = projected.length ? projected[projected.length - 1].price : lastPrice;
+    return {
+        points,
+        projected,
+        lastPrice,
+        forecastPrice,
+        changePct: lastPrice ? ((forecastPrice - lastPrice) / lastPrice) * 100 : 0,
+        r2: reg.r2,
+    };
+}
+
+async function buildForecast(symbol) {
+    const cached = forecastCache[symbol];
+    if (cached && Date.now() - cached.ts < FORECAST_CACHE_MS) return cached.data;
+
+    const [intradayRaw, dailyRaw] = await Promise.all([
+        fetchHistory(symbol, '5d', '15m'),
+        fetchHistory(symbol, '3mo', '1d'),
+    ]);
+
+    const INTRA_STEP_MS = 15 * 60 * 1000;
+    const DAILY_STEP_MS = 24 * 60 * 60 * 1000;
+
+    // Fit only the most recent session's bars so an overnight/weekend gap
+    // isn't read as part of the intraday trend, then project a couple hours
+    // of 15m bars ahead.
+    const intradaySession = intradayRaw.slice(-26);
+    const intraReg = linearRegression(intradaySession);
+    const intraProjected = intraReg ? projectForward(intradaySession, intraReg, 10, INTRA_STEP_MS) : [];
+    const intradaySummary = summarizeForecast(intradaySession, intraReg, intraProjected);
+
+    // Fit the last ~6 weeks of daily closes and project 5 trading days out.
+    const dailyWindow = dailyRaw.slice(-30);
+    const dailyReg = linearRegression(dailyWindow);
+    const dailyProjected = dailyReg ? projectForward(dailyWindow, dailyReg, 5, DAILY_STEP_MS) : [];
+    const dailySummary = summarizeForecast(dailyWindow, dailyReg, dailyProjected);
+
+    recordForecastSample(symbol, 'intraday', intradaySummary, INTRA_STEP_MS);
+    recordForecastSample(symbol, 'daily', dailySummary, DAILY_STEP_MS);
+    if (intradaySummary) intradaySummary.accuracy = computeAccuracy(symbol, 'intraday');
+    if (dailySummary) dailySummary.accuracy = computeAccuracy(symbol, 'daily');
+
+    const data = {
+        symbol,
+        generatedAt: Date.now(),
+        intraday: intradaySummary,
+        daily: dailySummary,
+    };
+    forecastCache[symbol] = { data, ts: Date.now() };
+    return data;
+}
+
 async function fetchPrices() {
     if (watchlist.length === 0) {
         mainWindow?.webContents.send('prices:update', { quotes: {}, marketOpen: false });
@@ -322,6 +540,7 @@ async function fetchPrices() {
     });
 
     lastQuotes = { ...lastQuotes, ...quotes };
+    resolvePendingForecasts();
     if (anyOk) {
         mainWindow?.webContents.send('prices:update', { quotes, marketOpen: marketOpenCount > 0 });
     } else {
@@ -424,6 +643,14 @@ ipcMain.handle('sound:pickCustom', async (_event, symbol, direction) => {
 });
 
 ipcMain.handle('prices:refresh', () => fetchPrices());
+
+ipcMain.handle('forecast:get', async (_event, symbol) => {
+    try {
+        return { ok: true, data: await buildForecast(symbol) };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
 
 app.whenReady().then(() => {
     createWindow();
