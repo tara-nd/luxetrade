@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('luxeAPI', {
     setAlert: (symbol, { above, below }) => ipcRenderer.invoke('watchlist:setAlert', symbol, { above, below }),
     refresh: () => ipcRenderer.invoke('prices:refresh'),
     getForecast: (symbol) => ipcRenderer.invoke('forecast:get', symbol),
+    getSparkline: (symbol) => ipcRenderer.invoke('sparkline:get', symbol),
     onPricesUpdate: (callback) => {
         ipcRenderer.on('prices:update', (_event, payload) => callback(payload));
     },

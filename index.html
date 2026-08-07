@@ -109,9 +109,27 @@
 
         @keyframes softPulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
         .pulse-dot { animation: softPulse 2s ease-in-out infinite; }
+
+        /* Ticker tape: track holds two copies of the same item list back to
+           back, so animating exactly -50% loops seamlessly with no visible
+           seam or reset-jump. Duration is set per-render (JS) based on item
+           count, so the scroll speed stays roughly constant regardless of
+           how many symbols are in the watchlist. */
+        .ticker-tape { overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent); mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent); }
+        .ticker-track { display: inline-flex; width: max-content; animation: tickerScroll linear infinite; }
+        .ticker-tape:hover .ticker-track { animation-play-state: paused; }
+        @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
     </style>
 </head>
 <body class="min-h-screen font-sans antialiased selection:bg-gold-400 selection:text-black">
+
+    <!-- Market Index Strip -->
+    <div id="index-strip" class="flex flex-wrap justify-center items-center gap-5 bg-black/80 border-b border-white/5 py-1.5 px-4 font-mono"></div>
+
+    <!-- Ticker Tape -->
+    <div id="ticker-tape" class="ticker-tape hidden bg-black/60 border-b border-gold-400/10 py-2">
+        <div id="ticker-track" class="ticker-track"></div>
+    </div>
 
     <div class="max-w-6xl mx-auto px-6 py-12">
 
@@ -140,6 +158,10 @@
                 <button onclick="toggleSound()" id="sound-btn" class="p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="Toggle Sound">
                     <i class="ph ph-speaker-high text-xl"></i>
                 </button>
+                <button onclick="openWhatsNew()" id="whats-new-btn" class="relative p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="What's New">
+                    <i class="ph ph-sparkle text-xl"></i>
+                    <span id="whats-new-badge" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-gold-400 shadow-[0_0_6px_rgba(212,175,55,0.8)]"></span>
+                </button>
             </div>
         </header>
 
@@ -157,6 +179,7 @@
                         <i class="ph ph-magnifying-glass text-gray-600 mr-3"></i>
                         <input type="text" id="symbol-input" placeholder="Enter Ticker — AAPL, TSLA, BTC-USD..."
                             class="flex-grow bg-transparent py-4 font-light text-lg tracking-wide placeholder-gray-600 uppercase focus:outline-none">
+                        <kbd class="hidden sm:inline-block text-[10px] text-gray-600 border border-white/10 rounded px-1.5 py-0.5 font-mono">/</kbd>
                     </div>
                     <button type="submit" class="flex items-center justify-center gap-2 bg-gradient-to-r from-gold-600 to-gold-400 text-black font-semibold px-8 py-4 rounded-lg hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all duration-300 transform hover:-translate-y-0.5">
                         <i class="ph-bold ph-plus"></i> ADD ASSET
@@ -231,7 +254,48 @@
         </div>
     </div>
 
+    <!-- What's New Modal -->
+    <div id="whats-new-overlay" class="hidden fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-6" onclick="if (event.target === this) closeWhatsNew()">
+        <div class="glass-card w-full max-w-lg rounded-2xl p-7 md:p-8 relative max-h-[80vh] overflow-y-auto">
+            <button onclick="closeWhatsNew()" class="absolute top-5 right-5 p-2 rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors">
+                <i class="ph ph-x text-lg"></i>
+            </button>
+
+            <div class="flex items-center gap-2 mb-1">
+                <i class="ph ph-sparkle text-gold-400 text-lg"></i>
+                <h2 class="font-serif text-xl text-white">What's New</h2>
+            </div>
+            <p class="text-[11px] text-gray-500 mb-6">Recent additions to LuxeTrade.</p>
+
+            <div id="whats-new-body" class="space-y-6"></div>
+        </div>
+    </div>
+
     <script>
+        // --- WHAT'S NEW ---
+        // Hand-maintained alongside the version bump in package.json — bump
+        // both together and add an entry here whenever a release ships
+        // user-visible changes. Most recent first.
+        const CURRENT_VERSION = '1.4.0';
+        const CHANGELOG = [
+            { version: '1.4.0', date: '2026-08-07', items: [
+                'Inline sparklines on every card — a 5-minute intraday price trace, colored to match that day\'s move.',
+                'Scrolling ticker tape across the top with live price + change for every watched symbol.',
+                'Fixed market index strip (S&P 500, Dow, Nasdaq, VIX) for market-wide context, independent of your watchlist.',
+                'Press "/" anywhere to jump straight to the ticker search box.',
+            ]},
+            { version: '1.3.0', date: '2026-08-06', items: [
+                'Statistical price forecast panel with confidence bands, for both intraday and daily horizons.',
+                'Forecast accuracy tracking — see how this symbol\'s trend-following has actually performed.',
+                'Day and 52-week range bars on every card.',
+            ]},
+            { version: '1.2.0', date: '2026-08-06', items: [
+                'Independent up/down alert sounds per stock, with a picker of built-in voices or your own custom audio.',
+                'Price target alerts (above/below) with native notifications.',
+                'Automatic background updates.',
+            ]},
+        ];
+
         // --- STATE MANAGEMENT ---
         // Watchlist and live prices live in the Electron main process (main.js);
         // this renderer just reflects whatever it's sent over IPC via preload.js.
@@ -243,6 +307,16 @@
         // renderer-side UI concern (not persisted) — kept in a module-level
         // Set so it survives the full-DOM rebuild renderGrid() does on every tick.
         let expandedCards = new Set();
+
+        // Intraday price trace per symbol, used to draw the inline sparkline
+        // on each card. Fetched separately from the 15s price poll (main.js
+        // caches it for 5 min) since a sparkline doesn't need tick-level updates.
+        let sparklineData = {};
+
+        // Macro index levels (S&P/Dow/Nasdaq/VIX), independent of the
+        // watchlist. Merged rather than replaced each tick so a transient
+        // fetch failure for one index doesn't blank it out of the strip.
+        let indexData = {};
 
         // Web Audio API Synthesizer for Premium Sounds
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -345,25 +419,11 @@
             audio.play().catch(err => console.error('Custom sound playback failed:', err.message));
         }
 
-        // A price-target alert is deliberately distinct from the per-stock voice
-        // (a triple alarm beep) so a hit target is unmistakable no matter what
-        // voice that stock is set to.
-        function playAlert(kind) {
-            if (!soundEnabled) return;
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            const now = audioCtx.currentTime;
-            const isUp = kind === 'above';
-            [0, 1, 2].forEach(i => tone(now + i * 0.12, {
-                type: 'square',
-                f1: isUp ? 700 : 700,
-                f2: isUp ? 1200 : 300,
-                dur: 0.16,
-                gain: 0.09,
-            }));
-        }
-
+        // Sound is now exclusively an alert-hit signal: a price-target alert
+        // plays that stock's own configured Up/Down voice (same picker used
+        // for previewing), rather than every routine tick making noise.
         window.luxeAPI.onAlertTriggered(({ symbol, kind, price, target }) => {
-            playAlert(kind);
+            playSoundForDirection(symbol, kind === 'above' ? 'up' : 'down');
             const msg = `🎯 ${symbol} ${kind === 'above' ? 'reached' : 'dropped to'} $${price.toFixed(2)} (target $${target.toFixed(2)})`;
             showNotification(msg, kind === 'above' ? 'up' : 'down');
         });
@@ -371,9 +431,10 @@
         // --- DATA FROM MAIN PROCESS (IPC) ---
         // main.js fetches Yahoo Finance directly (no CORS restrictions in Node)
         // and pushes updates here every 15s.
-        window.luxeAPI.onPricesUpdate(({ quotes, marketOpen }) => {
+        window.luxeAPI.onPricesUpdate(({ quotes, marketOpen, indices }) => {
             processQuotes(quotes);
             updateMarketStatus(marketOpen);
+            if (indices) renderIndexStrip(indices);
         });
 
         window.luxeAPI.onPricesError((message) => {
@@ -382,15 +443,10 @@
         });
 
         function processQuotes(quotes) {
+            // Routine ticks only update the card's own visuals (price, border
+            // flash) — no sound, no toast. Sound and notifications are reserved
+            // for price-target alerts (see onAlertTriggered above).
             Object.entries(quotes).forEach(([symbol, quote]) => {
-                if (quote.direction === 'up') {
-                    playSoundForDirection(symbol, 'up');
-                    showNotification(`${symbol} ▲ $${quote.price.toFixed(2)}`, 'up');
-                } else if (quote.direction === 'down') {
-                    playSoundForDirection(symbol, 'down');
-                    showNotification(`${symbol} ▼ $${quote.price.toFixed(2)}`, 'down');
-                }
-
                 stockData[symbol] = {
                     price: quote.price,
                     change: quote.change,
@@ -455,7 +511,139 @@
                 </div>`;
         }
 
+        // --- SPARKLINES ---
+        // Fetched independently of the 15s price poll (main.js caches each
+        // symbol's trace for 5 min) so pulling this in doesn't add to Yahoo
+        // load on every tick — it only needs to move every few minutes.
+        async function loadSparkline(symbol) {
+            const result = await window.luxeAPI.getSparkline(symbol);
+            if (result.ok) {
+                sparklineData[symbol] = result.data;
+                drawSparkline(symbol);
+            }
+        }
+
+        function refreshAllSparklines() {
+            watchlist.forEach(({ symbol }) => loadSparkline(symbol));
+        }
+
+        // Draws directly on the canvas 2D context rather than via Chart.js —
+        // there can be one of these per card, so keeping each render cheap
+        // matters more than the extra chart features Chart.js would offer.
+        function drawSparkline(symbol) {
+            const canvas = document.querySelector(`canvas[data-sparkline="${CSS.escape(symbol)}"]`);
+            const points = sparklineData[symbol];
+            if (!canvas || !points || points.length < 2) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            const { width: cssW, height: cssH } = canvas.getBoundingClientRect();
+            if (!cssW || !cssH) return;
+            canvas.width = cssW * dpr;
+            canvas.height = cssH * dpr;
+            const ctx = canvas.getContext('2d');
+            ctx.scale(dpr, dpr);
+            ctx.clearRect(0, 0, cssW, cssH);
+
+            const prices = points.map(p => p.price);
+            const min = Math.min(...prices);
+            const max = Math.max(...prices);
+            const range = max - min || 1;
+            // Color matches the card's own change-vs-previous-close sign
+            // (not the sparkline's own first/last bar) so the trace never
+            // reads red next to a green "Today" pill, or vice versa.
+            const cardChange = stockData[symbol]?.change;
+            const isUp = cardChange != null ? cardChange >= 0 : prices[prices.length - 1] >= prices[0];
+            const color = isUp ? '#4ade80' : '#f87171';
+            const pad = 2;
+
+            const xy = (i) => [
+                (i / (points.length - 1)) * cssW,
+                cssH - pad - ((prices[i] - min) / range) * (cssH - pad * 2),
+            ];
+
+            ctx.beginPath();
+            points.forEach((_, i) => {
+                const [x, y] = xy(i);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            const [lastX] = xy(points.length - 1);
+            ctx.lineTo(lastX, cssH);
+            ctx.lineTo(0, cssH);
+            ctx.closePath();
+            const gradient = ctx.createLinearGradient(0, 0, 0, cssH);
+            gradient.addColorStop(0, isUp ? 'rgba(74, 222, 128, 0.25)' : 'rgba(248, 113, 113, 0.25)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = gradient;
+            ctx.fill();
+        }
+
+        function drawAllSparklines() {
+            watchlist.forEach(({ symbol }) => drawSparkline(symbol));
+        }
+
+        // Renders the fixed macro-index row (S&P/Dow/Nasdaq/VIX) — always
+        // visible market-wide context, independent of whatever's on the
+        // watchlist (which may be empty, or a single unrelated ticker).
+        function renderIndexStrip(indices) {
+            Object.assign(indexData, indices);
+            const strip = document.getElementById('index-strip');
+            const entries = Object.values(indexData);
+            if (entries.length === 0) return;
+
+            strip.innerHTML = entries.map(({ label, price, change }) => {
+                const isUp = change >= 0;
+                const colorClass = isUp ? 'text-emerald-400' : 'text-rose-400';
+                return `
+                    <span class="inline-flex items-center gap-2">
+                        <span class="text-gray-500 uppercase tracking-[0.15em] text-[10px]">${label}</span>
+                        <span class="text-white tabular-nums">${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <span class="${colorClass} tabular-nums text-[10px]">${isUp ? '▲' : '▼'} ${Math.abs(change).toFixed(2)}%</span>
+                    </span>`;
+            }).join('<span class="text-white/10">|</span>');
+        }
+
+        // Renders the scrolling header strip (all watched symbols' price +
+        // change) independently of the card grid below — it's a summary
+        // view, not a duplicate of the cards, so it has its own tiny template.
+        function renderTickerTape() {
+            const tape = document.getElementById('ticker-tape');
+            const track = document.getElementById('ticker-track');
+
+            if (watchlist.length === 0) {
+                tape.classList.add('hidden');
+                track.innerHTML = '';
+                return;
+            }
+            tape.classList.remove('hidden');
+
+            const items = watchlist.map(({ symbol }) => {
+                const data = stockData[symbol] || { price: 0, change: 0 };
+                const isUp = data.change >= 0;
+                const colorClass = isUp ? 'text-emerald-400' : 'text-rose-400';
+                return `
+                    <span class="inline-flex items-center gap-2 px-4 text-xs font-mono">
+                        <span class="text-gray-400 font-semibold tracking-wider">${symbol}</span>
+                        <span class="text-white tabular-nums">${data.price ? '$' + data.price.toFixed(2) : '—'}</span>
+                        <span class="${colorClass} tabular-nums">${isUp ? '▲' : '▼'} ${Math.abs(data.change).toFixed(2)}%</span>
+                        <span class="text-gold-400/30 ml-2">•</span>
+                    </span>`;
+            }).join('');
+
+            // Two back-to-back copies so the -50%-translateX keyframe loops
+            // seamlessly; duration scales with item count to keep scroll
+            // speed roughly constant regardless of watchlist size.
+            track.innerHTML = items + items;
+            track.style.animationDuration = `${Math.max(15, watchlist.length * 6)}s`;
+        }
+
         function renderGrid() {
+            renderTickerTape();
+
             const grid = document.getElementById('stock-grid');
             const emptyState = document.getElementById('empty-state');
 
@@ -494,9 +682,9 @@
                 const hasCustomConfig = alertAbove != null || alertBelow != null || voiceUp !== 'chime' || voiceDown !== 'chime';
 
                 const card = document.createElement('div');
-                card.className = `stock-card glass-card p-7 rounded-2xl duration-300 ${borderStyle} relative group animate-fade-in`;
+                card.className = `stock-card glass-card p-5 rounded-2xl duration-300 ${borderStyle} relative group animate-fade-in`;
                 card.innerHTML = `
-                    <div class="flex justify-between items-start mb-5">
+                    <div class="flex justify-between items-start mb-3">
                         <div>
                             <h3 class="font-serif text-2xl text-white tracking-wide">${symbol}</h3>
                             <span class="text-[10px] text-gray-500 uppercase tracking-[0.2em] mt-1 flex items-center gap-1.5">
@@ -521,23 +709,27 @@
                         </div>
                     </div>
 
-                    <div class="flex items-baseline gap-3">
-                        <span class="text-4xl font-light text-white tabular-nums tracking-tight">
-                            ${data.price ? '$' + data.price.toFixed(2) : '—'}
-                        </span>
+                    <div class="flex items-center justify-between gap-3">
+                        <div>
+                            <div class="flex items-baseline gap-3">
+                                <span class="text-4xl font-light text-white tabular-nums tracking-tight">
+                                    ${data.price ? '$' + data.price.toFixed(2) : '—'}
+                                </span>
+                            </div>
+                            <div class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${pillBg} ${colorClass}">
+                                <i class="ph ${arrow} text-sm"></i>
+                                <span class="text-xs font-semibold tabular-nums">${Math.abs(data.change).toFixed(2)}% Today</span>
+                            </div>
+                        </div>
+                        <canvas data-sparkline="${symbol}" class="w-24 h-12 shrink-0"></canvas>
                     </div>
 
-                    <div class="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${pillBg} ${colorClass}">
-                        <i class="ph ${arrow} text-sm"></i>
-                        <span class="text-xs font-semibold tabular-nums">${Math.abs(data.change).toFixed(2)}% Today</span>
-                    </div>
-
-                    <div class="mt-5 space-y-3">
+                    <div class="mt-4 space-y-2">
                         ${rangeBar('Day', data.dayLow, data.dayHigh, data.price)}
                         ${rangeBar('52-Week', data.weekLow, data.weekHigh, data.price)}
                     </div>
 
-                    <div class="mt-6 pt-4 border-t border-white/5 flex justify-between items-center text-[11px] text-gray-500 font-mono tracking-wide">
+                    <div class="mt-3 pt-3 border-t border-white/5 flex justify-between items-center text-[11px] text-gray-500 font-mono tracking-wide">
                         <span>VOL ${(data.volume / 1000000).toFixed(1)}M</span>
                         <span class="flex items-center gap-1.5 ${data.flash ? 'text-gold-400' : ''}">
                             <span class="w-1.5 h-1.5 rounded-full ${data.flash ? 'bg-gold-400' : 'bg-gray-600'} pulse-dot"></span>
@@ -548,38 +740,6 @@
                     <div class="settings-panel ${isExpanded ? 'expanded' : ''}">
                         <div>
                             <div class="mt-5 pt-5 border-t border-white/5 space-y-4">
-                                <div>
-                                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
-                                        <i class="ph ph-speaker-high"></i> Sound
-                                    </p>
-                                    <div class="space-y-2">
-                                        <div class="flex items-center gap-2">
-                                            <i class="ph ph-trend-up text-emerald-400 text-sm w-4 shrink-0" title="Up Sound"></i>
-                                            <select onchange="onSoundSelectChange('${symbol}', 'up', this.value)"
-                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
-                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceUp ? 'selected' : ''}>${v.label}</option>`).join('')}
-                                                <option value="custom" ${voiceUp === 'custom' ? 'selected' : ''}>🎵 ${customUpName || 'Upload...'}</option>
-                                            </select>
-                                            <button onclick="previewSound('${symbol}', 'up')" title="Preview Up Sound"
-                                                class="p-2 rounded-lg hover:bg-white/5 text-emerald-400 transition-colors">
-                                                <i class="ph-fill ph-play-circle text-base"></i>
-                                            </button>
-                                        </div>
-                                        <div class="flex items-center gap-2">
-                                            <i class="ph ph-trend-down text-rose-400 text-sm w-4 shrink-0" title="Down Sound"></i>
-                                            <select onchange="onSoundSelectChange('${symbol}', 'down', this.value)"
-                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
-                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceDown ? 'selected' : ''}>${v.label}</option>`).join('')}
-                                                <option value="custom" ${voiceDown === 'custom' ? 'selected' : ''}>🎵 ${customDownName || 'Upload...'}</option>
-                                            </select>
-                                            <button onclick="previewSound('${symbol}', 'down')" title="Preview Down Sound"
-                                                class="p-2 rounded-lg hover:bg-white/5 text-rose-400 transition-colors">
-                                                <i class="ph-fill ph-play-circle text-base"></i>
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-
                                 <div>
                                     <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
                                         <i class="ph ph-target"></i> Price Alerts
@@ -603,12 +763,50 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <div>
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1 flex items-center gap-1.5">
+                                        <i class="ph ph-speaker-high"></i> Alert Sound
+                                    </p>
+                                    <p class="text-[10px] text-gray-600 mb-2">Plays only when an above/below target is hit — not on every tick.</p>
+                                    <div class="space-y-2">
+                                        <div class="flex items-center gap-2">
+                                            <i class="ph ph-trend-up text-emerald-400 text-sm w-4 shrink-0" title="Above-target sound"></i>
+                                            <select onchange="onSoundSelectChange('${symbol}', 'up', this.value)"
+                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
+                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceUp ? 'selected' : ''}>${v.label}</option>`).join('')}
+                                                <option value="custom" ${voiceUp === 'custom' ? 'selected' : ''}>🎵 ${customUpName || 'Upload...'}</option>
+                                            </select>
+                                            <button onclick="previewSound('${symbol}', 'up')" title="Preview above-target sound"
+                                                class="p-2 rounded-lg hover:bg-white/5 text-emerald-400 transition-colors">
+                                                <i class="ph-fill ph-play-circle text-base"></i>
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <i class="ph ph-trend-down text-rose-400 text-sm w-4 shrink-0" title="Below-target sound"></i>
+                                            <select onchange="onSoundSelectChange('${symbol}', 'down', this.value)"
+                                                class="select-glass text-xs px-2.5 py-2 rounded-lg flex-grow cursor-pointer">
+                                                ${VOICES.map(v => `<option value="${v.id}" ${v.id === voiceDown ? 'selected' : ''}>${v.label}</option>`).join('')}
+                                                <option value="custom" ${voiceDown === 'custom' ? 'selected' : ''}>🎵 ${customDownName || 'Upload...'}</option>
+                                            </select>
+                                            <button onclick="previewSound('${symbol}', 'down')" title="Preview below-target sound"
+                                                class="p-2 rounded-lg hover:bg-white/5 text-rose-400 transition-colors">
+                                                <i class="ph-fill ph-play-circle text-base"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 `;
                 grid.appendChild(card);
             });
+
+            // Canvases were just (re)created above, so their sparklines need
+            // to be redrawn now that they're actually in the DOM (a canvas
+            // can't be measured/drawn to before it has layout).
+            drawAllSparklines();
 
             if (focusRestore) {
                 const el = grid.querySelector(`[data-symbol="${CSS.escape(focusRestore.symbol)}"][data-alert-input="${focusRestore.field}"]`);
@@ -625,10 +823,12 @@
             if (!symbol) return;
             watchlist = await window.luxeAPI.addStock(symbol);
             renderGrid();
+            loadSparkline(symbol);
         }
 
         async function removeStock(symbol) {
             delete stockData[symbol];
+            delete sparklineData[symbol];
             expandedCards.delete(symbol);
             watchlist = await window.luxeAPI.removeStock(symbol);
             renderGrid();
@@ -738,6 +938,53 @@
             document.getElementById('forecast-overlay').classList.add('hidden');
             forecastState.chart?.destroy();
             forecastState = { symbol: null, data: null, tab: 'intraday', chart: null };
+        }
+
+        // --- WHAT'S NEW ---
+        const LAST_SEEN_VERSION_KEY = 'luxetrade-last-seen-version';
+
+        function renderWhatsNew() {
+            const body = document.getElementById('whats-new-body');
+            body.innerHTML = CHANGELOG.map(({ version, date, items }) => `
+                <div>
+                    <div class="flex items-baseline gap-2 mb-2">
+                        <span class="font-serif text-white">v${version}</span>
+                        <span class="text-[10px] text-gray-600 uppercase tracking-wider">${date}</span>
+                    </div>
+                    <ul class="space-y-1.5">
+                        ${items.map(item => `
+                            <li class="flex gap-2 text-sm text-gray-400 leading-snug">
+                                <i class="ph ph-fill ph-circle text-gold-400 text-[5px] mt-2 shrink-0"></i>
+                                <span>${item}</span>
+                            </li>`).join('')}
+                    </ul>
+                </div>`).join('');
+        }
+
+        function openWhatsNew() {
+            renderWhatsNew();
+            document.getElementById('whats-new-overlay').classList.remove('hidden');
+        }
+
+        function closeWhatsNew() {
+            document.getElementById('whats-new-overlay').classList.add('hidden');
+            localStorage.setItem(LAST_SEEN_VERSION_KEY, CURRENT_VERSION);
+            document.getElementById('whats-new-badge').classList.add('hidden');
+        }
+
+        // Auto-opens the panel once per version bump. A fresh install (no
+        // stored value at all) just records the current version silently —
+        // there's nothing "new" to show someone who's never seen an older one.
+        function checkForNewVersion() {
+            const lastSeen = localStorage.getItem(LAST_SEEN_VERSION_KEY);
+            if (lastSeen === null) {
+                localStorage.setItem(LAST_SEEN_VERSION_KEY, CURRENT_VERSION);
+                return;
+            }
+            if (lastSeen !== CURRENT_VERSION) {
+                document.getElementById('whats-new-badge').classList.remove('hidden');
+                openWhatsNew();
+            }
         }
 
         function switchForecastTab(tab) {
@@ -886,6 +1133,19 @@
 
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && !document.getElementById('forecast-overlay').classList.contains('hidden')) closeForecast();
+            if (e.key === 'Escape' && !document.getElementById('whats-new-overlay').classList.contains('hidden')) closeWhatsNew();
+
+            // Bloomberg-style "jump to command line" shortcut. Skipped while
+            // already typing anywhere (input/textarea/select) so it doesn't
+            // hijack a literal "/" the user meant to type.
+            const tag = document.activeElement?.tagName;
+            const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+            if (e.key === '/' && !isTyping) {
+                e.preventDefault();
+                const input = document.getElementById('symbol-input');
+                input.focus();
+                input.select();
+            }
         });
 
         // --- INITIALIZATION ---
@@ -901,7 +1161,15 @@
         (async () => {
             watchlist = await window.luxeAPI.getWatchlist();
             renderGrid();
+            refreshAllSparklines();
         })();
+
+        checkForNewVersion();
+
+        // Sparklines refresh on their own slower cadence (main.js caches each
+        // symbol's trace for 5 min anyway, so polling faster than that would
+        // just re-fetch the same cached points).
+        setInterval(refreshAllSparklines, 5 * 60 * 1000);
 
     </script>
 </body>

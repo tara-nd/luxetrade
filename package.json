@@ -1,6 +1,6 @@
 {
   "name": "luxetrade",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Desktop market watch with audio price alerts",
   "main": "main.js",
   "scripts": {

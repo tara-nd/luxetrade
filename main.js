@@ -216,6 +216,31 @@ async function fetchOneQuote(symbol) {
     return meta;
 }
 
+// --- MARKET INDEX STRIP ---
+// Fixed set of macro indices shown regardless of the user's watchlist, so
+// there's always market-wide context (not just whatever tickers they added).
+const INDEX_SYMBOLS = [
+    { symbol: '^GSPC', label: 'S&P 500' },
+    { symbol: '^DJI', label: 'DOW' },
+    { symbol: '^IXIC', label: 'NASDAQ' },
+    { symbol: '^VIX', label: 'VIX' },
+];
+
+async function fetchIndices() {
+    const settled = await Promise.allSettled(INDEX_SYMBOLS.map(({ symbol }) => fetchOneQuote(symbol)));
+    const indices = {};
+    settled.forEach((result, i) => {
+        if (result.status !== 'fulfilled') return;
+        const { symbol, label } = INDEX_SYMBOLS[i];
+        const meta = result.value;
+        const price = meta.regularMarketPrice ?? 0;
+        const prevClose = meta.previousClose ?? meta.chartPreviousClose ?? price;
+        const change = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+        indices[symbol] = { label, price, change };
+    });
+    return indices;
+}
+
 function deriveMarketState(meta) {
     const now = Date.now() / 1000;
     const period = meta.currentTradingPeriod;
@@ -260,9 +285,25 @@ function fireAlert(symbol, kind, price, target) {
             title: `🎯 ${symbol} target hit`,
             body: `${kind === 'above' ? 'Reached' : 'Dropped to'} $${price.toFixed(2)} (target $${target.toFixed(2)})`,
             icon: path.join(__dirname, 'assets', 'icon.png'),
-            silent: true, // renderer plays a dedicated alert sound
+            silent: true, // renderer plays that stock's configured alert voice
         }).show();
     }
+}
+
+// --- SPARKLINE (compact intraday price trace for the watchlist cards) ---
+// Cached independently from the 15s price poll — a sparkline only needs to
+// move every few minutes, so refreshing it on every tick would just be extra
+// Yahoo load for no visible benefit.
+const SPARKLINE_CACHE_MS = 5 * 60 * 1000;
+let sparklineCache = {}; // symbol -> { points, ts }
+
+async function getSparkline(symbol) {
+    const cached = sparklineCache[symbol];
+    if (cached && Date.now() - cached.ts < SPARKLINE_CACHE_MS) return cached.points;
+
+    const points = await fetchHistory(symbol, '1d', '5m');
+    sparklineCache[symbol] = { points, ts: Date.now() };
+    return points;
 }
 
 // --- FORECAST (statistical trend extrapolation, not a real prediction) ---
@@ -484,13 +525,12 @@ async function buildForecast(symbol) {
 }
 
 async function fetchPrices() {
-    if (watchlist.length === 0) {
-        mainWindow?.webContents.send('prices:update', { quotes: {}, marketOpen: false });
-        return;
-    }
-
     const symbols = watchlist.map((w) => w.symbol);
-    const settled = await Promise.allSettled(symbols.map(fetchOneQuote));
+    const [settled, indices] = await Promise.all([
+        Promise.allSettled(symbols.map(fetchOneQuote)),
+        fetchIndices(),
+    ]);
+
     const quotes = {};
     let marketOpenCount = 0;
     let anyOk = false;
@@ -529,24 +569,15 @@ async function fetchPrices() {
             weekHigh: meta.fiftyTwoWeekHigh ?? null,
         };
 
-        // Fire a native OS notification when the window isn't focused, so the
-        // user still hears/sees the move without the app being in the foreground.
-        if (direction && Notification.isSupported() && !mainWindow.isFocused()) {
-            new Notification({
-                title: `${symbol} ${direction === 'up' ? '▲' : '▼'} $${price.toFixed(2)}`,
-                body: `${direction === 'up' ? 'Up' : 'Down'} to $${price.toFixed(2)} (${changePercent.toFixed(2)}%)`,
-                icon: path.join(__dirname, 'assets', 'icon.png'),
-                silent: true, // renderer plays its own chime; avoid a double sound
-            }).show();
-        }
-
         checkPriceAlert(watchlist[i], price);
     });
 
     lastQuotes = { ...lastQuotes, ...quotes };
     resolvePendingForecasts();
-    if (anyOk) {
-        mainWindow?.webContents.send('prices:update', { quotes, marketOpen: marketOpenCount > 0 });
+    // The index strip is independent of the watchlist, so it still goes out
+    // even when there are no symbols to watch (or all of them failed).
+    if (anyOk || watchlist.length === 0) {
+        mainWindow?.webContents.send('prices:update', { quotes, marketOpen: marketOpenCount > 0, indices });
     } else {
         mainWindow?.webContents.send('prices:error', 'All symbol fetches failed');
     }
@@ -651,6 +682,14 @@ ipcMain.handle('prices:refresh', () => fetchPrices());
 ipcMain.handle('forecast:get', async (_event, symbol) => {
     try {
         return { ok: true, data: await buildForecast(symbol) };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('sparkline:get', async (_event, symbol) => {
+    try {
+        return { ok: true, data: await getSparkline(symbol) };
     } catch (err) {
         return { ok: false, error: err.message };
     }
