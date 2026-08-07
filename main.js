@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, dialog, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -304,6 +304,66 @@ async function getSparkline(symbol) {
     const points = await fetchHistory(symbol, '1d', '5m');
     sparklineCache[symbol] = { points, ts: Date.now() };
     return points;
+}
+
+// --- NEWS (headlines related to whatever's on the watchlist) ---
+// Yahoo's `search` endpoint returns a `news` array alongside quote matches;
+// requesting quotesCount=0 skips the quote-match work server-side since we
+// only want the news half. Cached per-symbol like the sparkline, since
+// headlines don't turn over fast enough to justify fetching on every tick.
+const NEWS_CACHE_MS = 5 * 60 * 1000;
+let newsCache = {}; // symbol -> { items, ts }
+
+async function fetchSymbolNews(symbol) {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=6&quotesCount=0`;
+    const res = await fetch(url, { headers: YAHOO_HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${symbol} news`);
+    const json = await res.json();
+    return (json.news || [])
+        // When Yahoo has no real match for the query it falls back to
+        // generic trending stories instead of an empty list — those never
+        // list the symbol in relatedTickers, so filtering on that is what
+        // actually keeps this "news about your stock" instead of noise.
+        .filter((n) => n.relatedTickers?.some((t) => t.toUpperCase() === symbol.toUpperCase()))
+        .map((n) => ({
+            uuid: n.uuid,
+            title: n.title,
+            publisher: n.publisher,
+            link: n.link,
+            time: n.providerPublishTime * 1000,
+        }));
+}
+
+async function getSymbolNews(symbol) {
+    const cached = newsCache[symbol];
+    if (cached && Date.now() - cached.ts < NEWS_CACHE_MS) return cached.items;
+
+    const items = await fetchSymbolNews(symbol);
+    newsCache[symbol] = { items, ts: Date.now() };
+    return items;
+}
+
+// Same story can show up under multiple watched tickers (e.g. a Fed story
+// tagged under both SPX and individual stocks) — merge by uuid and track
+// which of the user's symbols it's relevant to, rather than showing dupes.
+async function getWatchlistNews() {
+    const symbols = watchlist.map((w) => w.symbol);
+    const settled = await Promise.allSettled(symbols.map(getSymbolNews));
+
+    const merged = new Map();
+    settled.forEach((result, i) => {
+        if (result.status !== 'fulfilled') return;
+        const symbol = symbols[i];
+        result.value.forEach((item) => {
+            if (merged.has(item.uuid)) merged.get(item.uuid).symbols.add(symbol);
+            else merged.set(item.uuid, { ...item, symbols: new Set([symbol]) });
+        });
+    });
+
+    return [...merged.values()]
+        .map((item) => ({ ...item, symbols: [...item.symbols] }))
+        .sort((a, b) => b.time - a.time)
+        .slice(0, 15);
 }
 
 // --- FORECAST (statistical trend extrapolation, not a real prediction) ---
@@ -693,6 +753,21 @@ ipcMain.handle('sparkline:get', async (_event, symbol) => {
     } catch (err) {
         return { ok: false, error: err.message };
     }
+});
+
+ipcMain.handle('news:get', async () => {
+    try {
+        return { ok: true, data: await getWatchlistNews() };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
+
+// Renderer has no Node/shell access (contextIsolation + nodeIntegration:false),
+// so headline clicks route through here rather than a plain <a target="_blank">,
+// which Electron would otherwise just block with no window to open it in.
+ipcMain.handle('shell:openExternal', (_event, url) => {
+    if (typeof url === 'string' && /^https:\/\//.test(url)) shell.openExternal(url);
 });
 
 app.whenReady().then(() => {

@@ -197,6 +197,18 @@
             <p class="font-serif text-2xl text-gray-300">Your portfolio is empty.</p>
             <p class="text-gray-600 text-sm mt-2 tracking-wide">Add a ticker above to start watching it live.</p>
         </div>
+
+        <!-- Market Headlines -->
+        <section id="news-panel" class="hidden mt-10">
+            <div class="glass-card p-6 md:p-8 rounded-2xl relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-gold-400 to-transparent"></div>
+                <div class="flex items-center gap-2 mb-5">
+                    <i class="ph ph-newspaper text-gold-400 text-lg"></i>
+                    <h2 class="font-serif text-xl text-white">Market Headlines</h2>
+                </div>
+                <div id="news-list" class="divide-y divide-white/5"></div>
+            </div>
+        </section>
     </div>
 
     <!-- Notification Area -->
@@ -276,8 +288,12 @@
         // Hand-maintained alongside the version bump in package.json — bump
         // both together and add an entry here whenever a release ships
         // user-visible changes. Most recent first.
-        const CURRENT_VERSION = '1.4.0';
+        const CURRENT_VERSION = '1.5.0';
         const CHANGELOG = [
+            { version: '1.5.0', date: '2026-08-07', items: [
+                'Market Headlines panel — real news tied to your watchlist symbols, filtered so only stories actually about that ticker show up.',
+                'Click a headline to open it in your browser.',
+            ]},
             { version: '1.4.0', date: '2026-08-07', items: [
                 'Inline sparklines on every card — a 5-minute intraday price trace, colored to match that day\'s move.',
                 'Scrolling ticker tape across the top with live price + change for every watched symbol.',
@@ -317,6 +333,10 @@
         // watchlist. Merged rather than replaced each tick so a transient
         // fetch failure for one index doesn't blank it out of the strip.
         let indexData = {};
+
+        // Headlines related to whatever's on the watchlist, refreshed
+        // independently of the price poll (main.js caches per-symbol for 5 min).
+        let newsData = [];
 
         // Web Audio API Synthesizer for Premium Sounds
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -586,6 +606,59 @@
             watchlist.forEach(({ symbol }) => drawSparkline(symbol));
         }
 
+        // --- NEWS ---
+        function escapeHtml(str) {
+            return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            }[c]));
+        }
+
+        function relativeTime(ms) {
+            const diffMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
+            if (diffMin < 60) return `${diffMin}m ago`;
+            const diffHr = Math.round(diffMin / 60);
+            if (diffHr < 24) return `${diffHr}h ago`;
+            return `${Math.round(diffHr / 24)}d ago`;
+        }
+
+        async function loadNews() {
+            const result = await window.luxeAPI.getNews();
+            if (result.ok) {
+                newsData = result.data;
+                renderNews();
+            }
+        }
+
+        function renderNews() {
+            const panel = document.getElementById('news-panel');
+            const list = document.getElementById('news-list');
+
+            if (newsData.length === 0) {
+                panel.classList.add('hidden');
+                return;
+            }
+            panel.classList.remove('hidden');
+
+            // data-link (not an inline onclick with the URL spliced into JS
+            // source) keeps an odd character in a headline/link from ever
+            // being interpreted as code — the click is handled by a single
+            // delegated listener set up once at init.
+            list.innerHTML = newsData.map(({ title, publisher, link, time, symbols }) => `
+                <button data-link="${escapeHtml(link)}"
+                    class="w-full text-left py-3.5 first:pt-0 last:pb-0 flex items-start gap-3 group">
+                    <i class="ph ph-arrow-up-right text-gray-600 group-hover:text-gold-400 text-sm mt-1 shrink-0 transition-colors"></i>
+                    <div class="min-w-0">
+                        <p class="text-sm text-gray-200 group-hover:text-white transition-colors leading-snug">${escapeHtml(title)}</p>
+                        <p class="text-[11px] text-gray-600 mt-1.5 flex items-center gap-2 flex-wrap">
+                            <span>${escapeHtml(publisher)}</span>
+                            <span>•</span>
+                            <span>${relativeTime(time)}</span>
+                            ${symbols.map(s => `<span class="text-gold-400/70 border border-gold-400/20 rounded px-1.5 py-0.5 text-[10px] tracking-wide">${escapeHtml(s)}</span>`).join('')}
+                        </p>
+                    </div>
+                </button>`).join('');
+        }
+
         // Renders the fixed macro-index row (S&P/Dow/Nasdaq/VIX) — always
         // visible market-wide context, independent of whatever's on the
         // watchlist (which may be empty, or a single unrelated ticker).
@@ -824,6 +897,7 @@
             watchlist = await window.luxeAPI.addStock(symbol);
             renderGrid();
             loadSparkline(symbol);
+            loadNews();
         }
 
         async function removeStock(symbol) {
@@ -832,6 +906,7 @@
             expandedCards.delete(symbol);
             watchlist = await window.luxeAPI.removeStock(symbol);
             renderGrid();
+            loadNews();
         }
 
         function toggleCardSettings(symbol) {
@@ -1156,20 +1231,30 @@
             input.value = '';
         });
 
+        // Single delegated listener for headline clicks — news-list's
+        // innerHTML gets replaced wholesale on every renderNews(), so this
+        // is registered once against the container rather than per-button.
+        document.getElementById('news-list').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-link]');
+            if (btn) window.luxeAPI.openExternal(btn.dataset.link);
+        });
+
         // Initial Load — watchlist and polling live in main.js; just render
         // whatever the current watchlist is, then wait for the first IPC push.
         (async () => {
             watchlist = await window.luxeAPI.getWatchlist();
             renderGrid();
             refreshAllSparklines();
+            loadNews();
         })();
 
         checkForNewVersion();
 
-        // Sparklines refresh on their own slower cadence (main.js caches each
-        // symbol's trace for 5 min anyway, so polling faster than that would
-        // just re-fetch the same cached points).
+        // Sparklines and news refresh on their own slower cadence (main.js
+        // caches each for 5 min anyway, so polling faster than that would
+        // just re-fetch the same cached data).
         setInterval(refreshAllSparklines, 5 * 60 * 1000);
+        setInterval(loadNews, 5 * 60 * 1000);
 
     </script>
 </body>

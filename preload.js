@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('luxeAPI', {
     refresh: () => ipcRenderer.invoke('prices:refresh'),
     getForecast: (symbol) => ipcRenderer.invoke('forecast:get', symbol),
     getSparkline: (symbol) => ipcRenderer.invoke('sparkline:get', symbol),
+    getNews: () => ipcRenderer.invoke('news:get'),
+    openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
     onPricesUpdate: (callback) => {
         ipcRenderer.on('prices:update', (_event, payload) => callback(payload));
     },
