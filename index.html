@@ -158,12 +158,27 @@
                 <button onclick="toggleSound()" id="sound-btn" class="p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="Toggle Sound">
                     <i class="ph ph-speaker-high text-xl"></i>
                 </button>
+                <button onclick="toggleHud()" id="hud-btn" class="p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="Floating Ticker HUD (stays on top of other apps)">
+                    <i class="ph ph-picture-in-picture text-xl"></i>
+                </button>
                 <button onclick="openWhatsNew()" id="whats-new-btn" class="relative p-3 rounded-full hover:bg-gold-400/10 transition-colors text-gold-400 border border-gold-400/30" title="What's New">
                     <i class="ph ph-sparkle text-xl"></i>
                     <span id="whats-new-badge" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-gold-400 shadow-[0_0_6px_rgba(212,175,55,0.8)]"></span>
                 </button>
             </div>
         </header>
+
+        <!-- Portfolio Summary (only shown once at least one position has shares + cost basis set) -->
+        <section id="portfolio-summary" class="hidden mb-10">
+            <div class="glass-card p-6 md:p-8 rounded-2xl relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-gold-400 to-transparent"></div>
+                <div class="flex items-center gap-2 mb-5">
+                    <i class="ph ph-wallet text-gold-400 text-lg"></i>
+                    <h2 class="font-serif text-xl text-white">Portfolio</h2>
+                </div>
+                <div id="portfolio-summary-stats" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+            </div>
+        </section>
 
         <!-- Controls -->
         <section class="mb-10">
@@ -288,8 +303,13 @@
         // Hand-maintained alongside the version bump in package.json — bump
         // both together and add an entry here whenever a release ships
         // user-visible changes. Most recent first.
-        const CURRENT_VERSION = '1.5.0';
+        const CURRENT_VERSION = '1.6.0';
         const CHANGELOG = [
+            { version: '1.6.0', date: '2026-08-07', items: [
+                'Portfolio tracking — enter shares owned + avg cost per position (in a card\'s settings panel) to see live $ and % gain/loss, plus a portfolio-wide summary (total value, today\'s P&L, total P&L) at the top of the app.',
+                'Floating always-on-top ticker HUD — a small draggable panel (toggle via the header icon or tray menu) that stays visible over other apps, showing live prices for your whole watchlist.',
+                'Live tray icon — the taskbar icon itself now redraws as a tiny sparkline reflecting your watchlist\'s average move, so you can read the market without opening the app.',
+            ]},
             { version: '1.5.0', date: '2026-08-07', items: [
                 'Market Headlines panel — real news tied to your watchlist symbols, filtered so only stories actually about that ticker show up.',
                 'Click a headline to open it in your browser.',
@@ -531,6 +551,24 @@
                 </div>`;
         }
 
+        // Compact position readout shown on a card once shares + avg cost are
+        // both set — market value plus unrealized P&L in both $ and %,
+        // colored the same way the change pill is.
+        function positionLine(shares, costBasis, price) {
+            if (!price) return '';
+            const marketValue = shares * price;
+            const gainAbs = shares * (price - costBasis);
+            const gainPct = costBasis ? ((price - costBasis) / costBasis) * 100 : 0;
+            const isGain = gainAbs >= 0;
+            const colorClass = isGain ? 'text-emerald-400' : 'text-rose-400';
+            const sign = isGain ? '+' : '';
+            return `
+                <div class="mt-3 pt-3 border-t border-white/5 flex items-center justify-between text-xs">
+                    <span class="text-gray-500 tabular-nums">${shares} sh @ $${costBasis.toFixed(2)} <span class="text-gray-700">·</span> <span class="text-gray-300">$${marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                    <span class="${colorClass} font-semibold tabular-nums">${sign}$${Math.abs(gainAbs).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${gainPct.toFixed(1)}%)</span>
+                </div>`;
+        }
+
         // --- SPARKLINES ---
         // Fetched independently of the 15s price poll (main.js caches each
         // symbol's trace for 5 min) so pulling this in doesn't add to Yahoo
@@ -714,8 +752,62 @@
             track.style.animationDuration = `${Math.max(15, watchlist.length * 6)}s`;
         }
 
+        // Aggregates every position (entries with both shares and cost basis
+        // set) into total value / today's P&L / total unrealized P&L. Day $
+        // change per position is derived from the change% already on
+        // stockData (prevClose = price / (1 + change/100)) rather than
+        // fetching anything new.
+        function renderPortfolioSummary() {
+            const section = document.getElementById('portfolio-summary');
+            const stats = document.getElementById('portfolio-summary-stats');
+
+            const positions = watchlist
+                .filter(({ shares, costBasis }) => shares != null && costBasis != null)
+                .map(({ symbol, shares, costBasis }) => ({ shares, costBasis, data: stockData[symbol] }))
+                .filter(({ data }) => data && data.price);
+
+            if (positions.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+            section.classList.remove('hidden');
+
+            let totalValue = 0, totalCost = 0, totalDayChange = 0;
+            positions.forEach(({ shares, costBasis, data }) => {
+                totalValue += shares * data.price;
+                totalCost += shares * costBasis;
+                const prevClose = data.change != null ? data.price / (1 + data.change / 100) : data.price;
+                totalDayChange += shares * (data.price - prevClose);
+            });
+
+            const totalGain = totalValue - totalCost;
+            const totalGainPct = totalCost ? (totalGain / totalCost) * 100 : 0;
+            const prevTotalValue = totalValue - totalDayChange;
+            const dayChangePct = prevTotalValue ? (totalDayChange / prevTotalValue) * 100 : 0;
+
+            const fmt = (n) => '$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const stat = (label, value, colorClass) => `
+                <div>
+                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-1">${label}</p>
+                    <p class="text-2xl font-light tabular-nums ${colorClass || 'text-white'}">${value}</p>
+                </div>`;
+
+            const dayColor = totalDayChange >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const daySign = totalDayChange >= 0 ? '+' : '-';
+            const totalColor = totalGain >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const totalSign = totalGain >= 0 ? '+' : '-';
+
+            stats.innerHTML = [
+                stat('Total Value', fmt(totalValue)),
+                stat("Today's P&L", `${daySign}${fmt(totalDayChange)} <span class="text-sm align-middle">(${daySign}${Math.abs(dayChangePct).toFixed(2)}%)</span>`, dayColor),
+                stat('Total P&L', `${totalSign}${fmt(totalGain)} <span class="text-sm align-middle">(${totalSign}${Math.abs(totalGainPct).toFixed(2)}%)</span>`, totalColor),
+                stat('Positions', String(positions.length)),
+            ].join('');
+        }
+
         function renderGrid() {
             renderTickerTape();
+            renderPortfolioSummary();
 
             const grid = document.getElementById('stock-grid');
             const emptyState = document.getElementById('empty-state');
@@ -725,8 +817,17 @@
             // would normally steal focus/cursor out from under them — so capture
             // it here and restore it after the rebuild below.
             const active = document.activeElement;
-            const focusRestore = (active && active.dataset && active.dataset.alertInput)
-                ? { symbol: active.dataset.symbol, field: active.dataset.alertInput, selStart: active.selectionStart, selEnd: active.selectionEnd }
+            const activeInputAttr = active?.dataset?.alertInput ? 'data-alert-input'
+                : active?.dataset?.positionInput ? 'data-position-input'
+                : null;
+            const focusRestore = (active && activeInputAttr)
+                ? {
+                    symbol: active.dataset.symbol,
+                    attr: activeInputAttr,
+                    field: active.dataset.alertInput ?? active.dataset.positionInput,
+                    selStart: active.selectionStart,
+                    selEnd: active.selectionEnd,
+                }
                 : null;
 
             grid.innerHTML = '';
@@ -738,7 +839,7 @@
                 emptyState.classList.add('hidden');
             }
 
-            watchlist.forEach(({ symbol, voiceUp, voiceDown, customUpName, customDownName, alertAbove, alertBelow }) => {
+            watchlist.forEach(({ symbol, voiceUp, voiceDown, customUpName, customDownName, alertAbove, alertBelow, shares, costBasis }) => {
                 const data = stockData[symbol] || { price: 0, change: 0, volume: 0 };
                 const isUp = data.change >= 0;
                 const colorClass = isUp ? 'price-up' : 'price-down';
@@ -752,7 +853,8 @@
                 if (data.flash === 'down') borderStyle = 'border-rose-500/60 shadow-[0_0_30px_rgba(244,63,94,0.15)]';
 
                 const isExpanded = expandedCards.has(symbol);
-                const hasCustomConfig = alertAbove != null || alertBelow != null || voiceUp !== 'chime' || voiceDown !== 'chime';
+                const hasPosition = shares != null && costBasis != null;
+                const hasCustomConfig = alertAbove != null || alertBelow != null || voiceUp !== 'chime' || voiceDown !== 'chime' || hasPosition;
 
                 const card = document.createElement('div');
                 card.className = `stock-card glass-card p-5 rounded-2xl duration-300 ${borderStyle} relative group animate-fade-in`;
@@ -797,6 +899,8 @@
                         <canvas data-sparkline="${symbol}" class="w-24 h-12 shrink-0"></canvas>
                     </div>
 
+                    ${hasPosition ? positionLine(shares, costBasis, data.price) : ''}
+
                     <div class="mt-4 space-y-2">
                         ${rangeBar('Day', data.dayLow, data.dayHigh, data.price)}
                         ${rangeBar('52-Week', data.weekLow, data.weekHigh, data.price)}
@@ -813,6 +917,31 @@
                     <div class="settings-panel ${isExpanded ? 'expanded' : ''}">
                         <div>
                             <div class="mt-5 pt-5 border-t border-white/5 space-y-4">
+                                <div>
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
+                                        <i class="ph ph-wallet"></i> Your Position
+                                    </p>
+                                    <p class="text-[10px] text-gray-600 mb-2">Optional — enter both to see live gain/loss on this card and in the portfolio summary.</p>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <div class="flex items-center glass-input rounded-lg px-2.5 py-2 gap-1.5">
+                                            <i class="ph ph-hash text-gray-500 text-xs shrink-0"></i>
+                                            <input type="number" step="any" placeholder="Shares"
+                                                value="${shares ?? ''}"
+                                                data-symbol="${symbol}" data-position-input="shares"
+                                                onchange="setStockPosition('${symbol}', 'shares', this.value)"
+                                                class="bg-transparent outline-none text-xs w-full text-white placeholder-gray-600 tabular-nums">
+                                        </div>
+                                        <div class="flex items-center glass-input rounded-lg px-2.5 py-2 gap-1.5">
+                                            <i class="ph ph-currency-dollar text-gray-500 text-xs shrink-0"></i>
+                                            <input type="number" step="0.01" placeholder="Avg Cost"
+                                                value="${costBasis ?? ''}"
+                                                data-symbol="${symbol}" data-position-input="costBasis"
+                                                onchange="setStockPosition('${symbol}', 'costBasis', this.value)"
+                                                class="bg-transparent outline-none text-xs w-full text-white placeholder-gray-600 tabular-nums">
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div>
                                     <p class="text-[10px] uppercase tracking-[0.15em] text-gray-500 mb-2 flex items-center gap-1.5">
                                         <i class="ph ph-target"></i> Price Alerts
@@ -882,7 +1011,7 @@
             drawAllSparklines();
 
             if (focusRestore) {
-                const el = grid.querySelector(`[data-symbol="${CSS.escape(focusRestore.symbol)}"][data-alert-input="${focusRestore.field}"]`);
+                const el = grid.querySelector(`[data-symbol="${CSS.escape(focusRestore.symbol)}"][${focusRestore.attr}="${focusRestore.field}"]`);
                 if (el) {
                     el.focus();
                     el.setSelectionRange(focusRestore.selStart, focusRestore.selEnd);
@@ -945,12 +1074,27 @@
             watchlist = await window.luxeAPI.setAlert(symbol, { above, below });
         }
 
+        async function setStockPosition(symbol, field, rawValue) {
+            const value = rawValue === '' ? null : parseFloat(rawValue);
+            const entry = watchlist.find(w => w.symbol === symbol);
+            const shares = field === 'shares' ? value : (entry?.shares ?? null);
+            const costBasis = field === 'costBasis' ? value : (entry?.costBasis ?? null);
+            watchlist = await window.luxeAPI.setPosition(symbol, { shares, costBasis });
+            renderGrid();
+        }
+
         function toggleSound() {
             soundEnabled = !soundEnabled;
             const btn = document.getElementById('sound-btn');
             const icon = btn.querySelector('i');
             btn.classList.toggle('opacity-50', !soundEnabled);
             icon.className = soundEnabled ? 'ph ph-speaker-high text-xl' : 'ph ph-speaker-slash text-xl';
+        }
+
+        async function toggleHud() {
+            const visible = await window.luxeAPI.toggleHud();
+            document.getElementById('hud-btn').classList.toggle('text-gold-400', true);
+            document.getElementById('hud-btn').classList.toggle('bg-gold-400/10', visible);
         }
 
         function showNotification(msg, type) {

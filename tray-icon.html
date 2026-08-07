@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    html, body { margin: 0; padding: 0; background: transparent; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="32" height="32"></canvas>
+<script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    // Renders a tiny sparkline of recent average watchlist % change directly
+    // into the tray icon — this window is never shown, it exists purely so
+    // capturePage() in main.js has something to screenshot into a NativeImage.
+    function draw(history) {
+        ctx.clearRect(0, 0, 32, 32);
+
+        if (!history || history.length < 2) {
+            ctx.strokeStyle = '#6b7280';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(5, 16);
+            ctx.lineTo(27, 16);
+            ctx.stroke();
+            return;
+        }
+
+        const isUp = history[history.length - 1] >= history[0];
+        const color = isUp ? '#4ade80' : '#f87171';
+        const min = Math.min(...history);
+        const max = Math.max(...history);
+        const range = (max - min) || 1;
+        const pad = 4;
+
+        const xy = (i) => [
+            pad + (i / (history.length - 1)) * (32 - pad * 2),
+            32 - pad - ((history[i] - min) / range) * (32 - pad * 2),
+        ];
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        history.forEach((_, i) => {
+            const [x, y] = xy(i);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+
+    window.trayAPI.onDraw((history) => {
+        draw(history);
+        // Wait a frame so the canvas paint has actually landed before main.js
+        // screenshots this window.
+        requestAnimationFrame(() => requestAnimationFrame(() => window.trayAPI.ready()));
+    });
+</script>
+</body>
+</html>

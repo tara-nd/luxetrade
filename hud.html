@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>LuxeTrade HUD</title>
+<style>
+    html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+    * { box-sizing: border-box; font-family: 'Segoe UI', -apple-system, sans-serif; }
+
+    /* The whole panel is a drag handle (Electron's -webkit-app-region: drag)
+       so the HUD can be repositioned by grabbing anywhere on it — except the
+       list and close button, which need real mouse interaction (scroll, click). */
+    .panel {
+        width: 100%;
+        height: 100%;
+        background: rgba(8, 8, 8, 0.9);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(212, 175, 55, 0.25);
+        border-radius: 12px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        color: #e5e5e5;
+        -webkit-app-region: drag;
+    }
+    .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        cursor: default;
+    }
+    .title {
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #D4AF37;
+        font-weight: 600;
+    }
+    .close-btn {
+        -webkit-app-region: no-drag;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #888;
+        cursor: pointer;
+        font-size: 11px;
+        line-height: 1;
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+    .close-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    .list {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-app-region: no-drag;
+    }
+    .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 7px 10px;
+        font-size: 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .symbol { font-weight: 600; letter-spacing: 0.04em; color: #fff; white-space: nowrap; }
+    .price { font-variant-numeric: tabular-nums; color: #ccc; white-space: nowrap; }
+    .change { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 11px; white-space: nowrap; }
+    .up { color: #4ade80; }
+    .down { color: #f87171; }
+    .empty { padding: 20px 12px; text-align: center; font-size: 11px; color: #666; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+</style>
+</head>
+<body>
+    <div class="panel">
+        <div class="header">
+            <span class="title" ondblclick="window.hudAPI.openMain()">✧ LuxeTrade</span>
+            <button class="close-btn" title="Hide HUD" onclick="window.hudAPI.requestClose()">✕</button>
+        </div>
+        <div class="list" id="list"></div>
+    </div>
+
+    <script>
+        // Merge rather than replace — a symbol missing from one update
+        // (transient fetch failure) shouldn't blank its row, it should just
+        // keep showing the last known price.
+        let lastQuotes = {};
+
+        function render({ quotes, watchlist }) {
+            Object.assign(lastQuotes, quotes);
+            const list = document.getElementById('list');
+
+            if (!watchlist || watchlist.length === 0) {
+                list.innerHTML = '<div class="empty">Watchlist is empty</div>';
+                return;
+            }
+
+            list.innerHTML = watchlist.map(({ symbol }) => {
+                const q = lastQuotes[symbol] || {};
+                const isUp = (q.change ?? 0) >= 0;
+                const dir = isUp ? 'up' : 'down';
+                const arrow = isUp ? '▲' : '▼';
+                return `
+                    <div class="row">
+                        <span class="symbol">${symbol}</span>
+                        <span class="price">${q.price ? '$' + q.price.toFixed(2) : '—'}</span>
+                        <span class="change ${dir}">${arrow} ${Math.abs(q.change ?? 0).toFixed(2)}%</span>
+                    </div>`;
+            }).join('');
+        }
+
+        (async () => {
+            render(await window.hudAPI.getInitial());
+        })();
+        window.hudAPI.onUpdate(render);
+    </script>
+</body>
+</html>

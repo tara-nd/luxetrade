@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, dialog, shell, screen } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -8,15 +8,23 @@ const { pathToFileURL } = require('url');
 const WATCHLIST_FILE = path.join(app.getPath('userData'), 'watchlist.json');
 const SOUNDS_DIR = path.join(app.getPath('userData'), 'sounds');
 fs.mkdirSync(SOUNDS_DIR, { recursive: true });
+const HUD_STATE_FILE = path.join(app.getPath('userData'), 'hud-state.json');
+const HUD_WIDTH = 260;
+const HUD_HEIGHT = 360;
 
 const POLL_INTERVAL_MS = 15000;
 
 let mainWindow = null;
 let tray = null;
+let trayIconWindow = null; // hidden renderer used only to paint the live tray icon
+let trayHistory = []; // recent avg watchlist %change samples, for the tray sparkline
+let hudWindow = null; // floating always-on-top ticker
 let pollTimer = null;
 let isQuitting = false;
 let updateReady = false;
 let manualCheckInProgress = false;
+
+const TRAY_HISTORY_MAX = 20;
 
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
@@ -24,6 +32,7 @@ const DEFAULT_VOICE = 'chime';
 
 let watchlist = loadWatchlist(); // [{ symbol, voiceUp, voiceDown, alertAbove, alertBelow }]
 let lastQuotes = {}; // symbol -> last known quote, used to detect direction changes
+let hudState = loadHudState(); // { x, y, visible } — floating ticker HUD window
 
 // Per-symbol arm state for price-target alerts, so a target that stays
 // crossed doesn't re-fire every poll — it re-arms once price crosses back.
@@ -50,7 +59,7 @@ function loadWatchlist() {
             return {
                 symbol: entry, voiceUp: DEFAULT_VOICE, voiceDown: DEFAULT_VOICE,
                 customUpFile: null, customUpName: null, customDownFile: null, customDownName: null,
-                alertAbove: null, alertBelow: null,
+                alertAbove: null, alertBelow: null, shares: null, costBasis: null,
             };
         }
         return {
@@ -63,6 +72,10 @@ function loadWatchlist() {
             customDownName: entry.customDownName ?? null,
             alertAbove: entry.alertAbove ?? null,
             alertBelow: entry.alertBelow ?? null,
+            // A position is optional — most watchlist entries are just
+            // being watched, not held. null means "no position entered".
+            shares: entry.shares ?? null,
+            costBasis: entry.costBasis ?? null,
         };
     });
 }
@@ -88,6 +101,18 @@ function deleteCustomFile(filename) {
 
 function saveWatchlist() {
     fs.writeFileSync(WATCHLIST_FILE, JSON.stringify(watchlist, null, 2));
+}
+
+function loadHudState() {
+    try {
+        return JSON.parse(fs.readFileSync(HUD_STATE_FILE, 'utf-8'));
+    } catch {
+        return { x: null, y: null, visible: false };
+    }
+}
+
+function saveHudState() {
+    fs.writeFileSync(HUD_STATE_FILE, JSON.stringify(hudState));
 }
 
 function createWindow() {
@@ -120,6 +145,7 @@ function createWindow() {
 function buildTrayMenu() {
     const items = [
         { label: 'Show LuxeTrade', click: () => mainWindow.show() },
+        { label: hudWindow?.isVisible() ? 'Hide Ticker HUD' : 'Show Ticker HUD', click: () => toggleHud() },
         { label: 'Refresh Now', click: () => fetchPrices() },
         { label: 'Check for Updates', click: () => checkForUpdates(true) },
     ];
@@ -140,6 +166,115 @@ function createTray() {
         if (mainWindow.isVisible()) mainWindow.hide();
         else mainWindow.show();
     });
+}
+
+// --- FLOATING TICKER HUD ---
+// A small always-on-top, frameless window that stays visible over other
+// apps — the one thing a browser-based terminal can't do. Created once and
+// hidden/shown thereafter rather than destroyed, so its position survives
+// toggling within a session; the position (and whether it was left open) is
+// also persisted to disk so it comes back where you left it next launch.
+function createHudWindow() {
+    const display = screen.getPrimaryDisplay();
+    const defaultX = display.workArea.x + display.workArea.width - HUD_WIDTH - 24;
+    const defaultY = display.workArea.y + 24;
+
+    hudWindow = new BrowserWindow({
+        width: HUD_WIDTH,
+        height: HUD_HEIGHT,
+        x: hudState.x ?? defaultX,
+        y: hudState.y ?? defaultY,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        show: false,
+        webPreferences: {
+            preload: path.join(__dirname, 'hud-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
+    hudWindow.loadFile('hud.html');
+
+    hudWindow.on('moved', () => {
+        const [x, y] = hudWindow.getPosition();
+        hudState.x = x;
+        hudState.y = y;
+        saveHudState();
+    });
+
+    // Treat the window-manager close (if the user ever gets a native close
+    // affordance) the same as the in-panel close button — hide, don't destroy.
+    hudWindow.on('close', (event) => {
+        if (!isQuitting) {
+            event.preventDefault();
+            hideHud();
+        }
+    });
+
+    if (hudState.visible) hudWindow.showInactive();
+}
+
+function showHud() {
+    if (!hudWindow) return;
+    hudWindow.showInactive(); // don't steal focus from whatever the user's doing
+    hudState.visible = true;
+    saveHudState();
+    tray?.setContextMenu(buildTrayMenu());
+}
+
+function hideHud() {
+    if (!hudWindow) return;
+    hudWindow.hide();
+    hudState.visible = false;
+    saveHudState();
+    tray?.setContextMenu(buildTrayMenu());
+}
+
+function toggleHud() {
+    if (hudWindow?.isVisible()) hideHud();
+    else showHud();
+}
+
+// --- LIVE TRAY ICON ---
+// A tray icon is a static image, not a webpage — there's no way to paint a
+// live sparkline into it directly. The trick: keep a hidden BrowserWindow
+// (never shown, transparent) that draws the sparkline on a <canvas>, then
+// screenshot that window with capturePage() and hand the resulting
+// NativeImage to tray.setImage(). `transparent: true` on the window is what
+// keeps capturePage()'s alpha channel intact instead of capturing a solid
+// background.
+function createTrayIconWindow() {
+    trayIconWindow = new BrowserWindow({
+        width: 32,
+        height: 32,
+        show: false,
+        frame: false,
+        transparent: true,
+        skipTaskbar: true,
+        resizable: false,
+        webPreferences: {
+            preload: path.join(__dirname, 'tray-icon-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
+    trayIconWindow.loadFile('tray-icon.html');
+}
+
+function updateTrayIcon(history) {
+    if (!trayIconWindow || trayIconWindow.isDestroyed()) return;
+    ipcMain.once('tray:ready', async () => {
+        try {
+            const image = await trayIconWindow.webContents.capturePage();
+            tray?.setImage(image);
+        } catch (err) {
+            console.error('Tray icon capture failed:', err.message);
+        }
+    });
+    trayIconWindow.webContents.send('tray:draw', history);
 }
 
 // --- AUTO UPDATE ---
@@ -638,8 +773,18 @@ async function fetchPrices() {
     // even when there are no symbols to watch (or all of them failed).
     if (anyOk || watchlist.length === 0) {
         mainWindow?.webContents.send('prices:update', { quotes, marketOpen: marketOpenCount > 0, indices });
+        hudWindow?.webContents.send('hud:update', { quotes, watchlist: serializeWatchlist() });
     } else {
         mainWindow?.webContents.send('prices:error', 'All symbol fetches failed');
+    }
+
+    const changes = Object.values(quotes).map((q) => q.change).filter((c) => Number.isFinite(c));
+    if (changes.length > 0) {
+        const avgChange = changes.reduce((sum, c) => sum + c, 0) / changes.length;
+        trayHistory.push(avgChange);
+        if (trayHistory.length > TRAY_HISTORY_MAX) trayHistory.shift();
+        updateTrayIcon(trayHistory);
+        tray?.setToolTip(`LuxeTrade — avg ${avgChange >= 0 ? '+' : ''}${avgChange.toFixed(2)}% today`);
     }
 }
 
@@ -657,7 +802,7 @@ ipcMain.handle('watchlist:add', (_event, symbol) => {
         watchlist.push({
             symbol, voiceUp: DEFAULT_VOICE, voiceDown: DEFAULT_VOICE,
             customUpFile: null, customUpName: null, customDownFile: null, customDownName: null,
-            alertAbove: null, alertBelow: null,
+            alertAbove: null, alertBelow: null, shares: null, costBasis: null,
         });
         saveWatchlist();
         fetchPrices();
@@ -701,6 +846,19 @@ ipcMain.handle('watchlist:setAlert', (_event, symbol, { above, below }) => {
         entry.alertAbove = above;
         entry.alertBelow = below;
         alertArmed[symbol] = { above: true, below: true }; // re-arm on a new/changed target
+        saveWatchlist();
+    }
+    return serializeWatchlist();
+});
+
+// Both fields travel together — a share count with no cost basis (or vice
+// versa) can't produce a P&L figure, so the renderer only ever sends both
+// or clears both.
+ipcMain.handle('watchlist:setPosition', (_event, symbol, { shares, costBasis }) => {
+    const entry = watchlist.find((w) => w.symbol === symbol);
+    if (entry) {
+        entry.shares = shares;
+        entry.costBasis = costBasis;
         saveWatchlist();
     }
     return serializeWatchlist();
@@ -770,9 +928,22 @@ ipcMain.handle('shell:openExternal', (_event, url) => {
     if (typeof url === 'string' && /^https:\/\//.test(url)) shell.openExternal(url);
 });
 
+ipcMain.handle('hud:toggle', () => {
+    toggleHud();
+    return hudWindow?.isVisible() ?? false;
+});
+
+ipcMain.handle('hud:getInitial', () => ({ watchlist: serializeWatchlist(), quotes: lastQuotes }));
+
+ipcMain.handle('hud:openMain', () => mainWindow?.show());
+
+ipcMain.on('hud:requestClose', () => hideHud());
+
 app.whenReady().then(() => {
     createWindow();
     createTray();
+    createTrayIconWindow();
+    createHudWindow();
     startPolling();
 
     checkForUpdates();
